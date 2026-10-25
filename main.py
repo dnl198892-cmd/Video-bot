@@ -7,10 +7,13 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import magic_hour
 
+# Бот берет ключи из переменных окружения
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 MAGIC_HOUR_KEY = os.getenv("MAGIC_HOUR_KEY")
+
 MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
 
+# Инициализируем клиент Magic Hour
 mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY)
 
 def run_dummy_server():
@@ -32,14 +35,17 @@ async def send_video_to_user(update: Update, video_url):
         temp_file = "temp_video.mp4"
         with open(temp_file, "wb") as f:
             f.write(video_data)
+        
         with open(temp_file, "rb") as f:
             await update.message.reply_video(video=f, caption="Ваше видео готово! 🎉")
+        
         os.remove(temp_file)
     except Exception as e:
-        await update.message.reply_text(f"❌ Не удалось отправить видео: {e}\nСсылка: {video_url}")
+        # Если видео слишком большое для Telegram, отправляем ссылку
+        await update.message.reply_text(f"⚠️ Видео готово, но не удалось отправить файлом (возможно, слишком большое).\nСсылка для скачивания: {video_url}")
 
 async def create_video_task(update: Update, prompt, image_path=None):
-    await update.message.reply_text("🎬 Создаю видео через Magic Hour... Жди (до 5 минут)!")
+    await update.message.reply_text("🎬 Создаю видео через Magic Hour... Жди (до 10 минут)!")
 
     headers = {"Authorization": f"Bearer {MAGIC_HOUR_KEY}", "Content-Type": "application/json"}
     
@@ -78,13 +84,16 @@ async def create_video_task(update: Update, prompt, image_path=None):
             return
 
         final_url = None
-        for _ in range(30): 
+        # Увеличено до 10 минут (60 попыток по 10 секунд)
+        for i in range(60): 
             time.sleep(10)
             check = requests.get(f"{MAGIC_HOUR_URL}/projects/{project_id}", headers=headers, timeout=30)
             if check.status_code != 200:
                 continue
+                
             result = check.json()
             status = str(result.get("status", "")).lower()
+            
             if status in ["complete", "completed", "succeeded"]:
                 downloads = result.get("downloads")
                 if downloads and isinstance(downloads, list) and len(downloads) > 0:
@@ -97,7 +106,7 @@ async def create_video_task(update: Update, prompt, image_path=None):
         if final_url:
             await send_video_to_user(update, final_url)
         else:
-            await update.message.reply_text("Превышено время ожидания (5 минут).")
+            await update.message.reply_text("Прошло 10 минут, видео всё еще рендерится. Зайдите на сайт Magic Hour в раздел Library позже.")
 
     except Exception as e:
         await update.message.reply_text(f"Критическая ошибка: {e}")
@@ -113,6 +122,7 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Тест: получил фото...")
     caption = update.message.caption or ""
     prompt = caption.replace("/photo", "").strip()
+    
     if not prompt:
         await update.message.reply_text("⚠️ Напиши текст после /photo в подписи к фото.")
         return
@@ -124,6 +134,7 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await photo_file.download_to_drive(custom_path=temp_image_path)
             await update.message.reply_text("✅ Фото скачано. Загружаю в Magic Hour...")
             
+            # Загружаем файл напрямую в Magic Hour
             uploaded_file_path = mh_client.v1.files.upload_file(temp_image_path)
             os.remove(temp_image_path)
             
