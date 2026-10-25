@@ -3,7 +3,6 @@ import time
 import requests
 import threading
 import concurrent.futures
-import random
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -111,7 +110,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Привет! Я универсальный бот.\n\n"
         "🎬 **Видео:** Отправь фото с подписью `/photo текст`, и я оживлю его.\n"
         "🍿 **Кино:** Напиши `/movie Название фильма`, чтобы найти информацию.\n"
-        "🎵 **Музыка:** Напиши `/music Название песни`, и я пришлю аудио.\n"
+        "🎵 **Музыка:** Напиши `/music Название песни`, и я найду трек.\n"
         "📺 **ТВ:** Введи `/tv`, чтобы получить ссылку на твой личный плейлист каналов.",
         parse_mode="Markdown"
     )
@@ -153,101 +152,46 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка при поиске: {e}")
 
-# --- Новая функция поиска музыки через Invidious (без yt-dlp) ---
-INVIDIOUS_INSTANCES = [
-    "https://inv.nadeko.net",
-    "https://invidious.nerdvpn.de",
-    "https://yewtu.be",
-    "https://invidious.f5.si",
-    "https://inv.tux.pizza",
-    "https://invidious.privacyredirect.com"
-]
-
-def download_music(query):
-    instances = INVIDIOUS_INSTANCES.copy()
-    random.shuffle(instances)
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-
-    for instance in instances:
-        try:
-            search_url = f"{instance}/api/v1/search?q={query}&type=video"
-            print(f"Пробую сервер: {instance}")
-            res = requests.get(search_url, headers=headers, timeout=10)
-            if res.status_code != 200:
-                continue
-            
-            search_data = res.json()
-            if not search_data:
-                continue
-            
-            video_id = search_data[0].get("videoId")
-            if not video_id:
-                continue
-
-            stream_url = f"{instance}/api/v1/videos/{video_id}"
-            stream_res = requests.get(stream_url, headers=headers, timeout=10)
-            if stream_res.status_code != 200:
-                continue
-                
-            stream_data = stream_res.json()
-            adaptive_formats = stream_data.get("adaptiveFormats", [])
-            
-            audio_streams = [f for f in adaptive_formats if f.get("type", "").startswith("audio")]
-            if not audio_streams:
-                continue
-
-            best_audio = max(audio_streams, key=lambda x: int(x.get("bitrate", 0)))
-            audio_url = best_audio.get("url")
-            
-            if audio_url:
-                audio_res = requests.get(audio_url, headers=headers, timeout=30)
-                with open("music_temp.mp3", "wb") as f:
-                    f.write(audio_res.content)
-                
-                title = search_data[0].get("title", "Неизвестный трек")
-                performer = search_data[0].get("author", "Неизвестный исполнитель")
-                return title, performer, "music_temp.mp3"
-
-        except Exception as e:
-            print(f"Ошибка на сервере {instance}: {e}")
-            continue
-
-    return None, None, None
-
+# --- Поиск музыки через iTunes API (без блокировок) ---
 async def search_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args)
     if not query:
-        await update.message.reply_text("Напиши название песни или исполнителя. Пример: /music Imagine Dragons Believer")
+        await update.message.reply_text("Напиши название песни или исполнителя. Пример: /music Linkin Park In The End")
         return
 
-    await update.message.reply_text(f"🎵 Ищу песню «{query}»... Это может занять 10-20 секунд.")
+    await update.message.reply_text(f"🎵 Ищу песню «{query}»...")
 
     try:
-        title, performer, file_path = download_music(query)
-        
-        if not file_path or not os.path.exists(file_path):
-            await update.message.reply_text("😔 Не удалось найти или скачать эту песню. Попробуй другое название.")
+        url = f"https://itunes.apple.com/search?term={query}&entity=song&limit=1"
+        res = requests.get(url, timeout=10)
+        data = res.json()
+
+        if not data.get("results"):
+            await update.message.reply_text("😔 Ничего не нашлось. Попробуй другое название.")
             return
 
-        await update.message.reply_text("📤 Отправляю аудио...")
+        track = data["results"][0]
+        track_name = track.get("trackName", "Неизвестный трек")
+        artist_name = track.get("artistName", "Неизвестный исполнитель")
+        preview_url = track.get("previewUrl")
+        artwork_url = track.get("artworkUrl100", "").replace("100x100", "600x600")
+
+        caption = f"🎵 **{artist_name} — {track_name}**\n\n"
         
-        with open(file_path, "rb") as audio_file:
+        if preview_url:
             await update.message.reply_audio(
-                audio=audio_file,
-                title=title,
-                performer=performer,
-                caption=f"🎵 {title} — {performer}"
+                audio=preview_url,
+                title=track_name,
+                performer=artist_name,
+                thumbnail=artwork_url,
+                caption=caption,
+                parse_mode="Markdown"
             )
-        
-        os.remove(file_path)
+        else:
+            await update.message.reply_text("Нашел песню, но нет отрывка для прослушивания.")
 
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка при поиске музыки: {e}")
-        if os.path.exists("music_temp.mp3"):
-            os.remove("music_temp.mp3")
+        await update.message.reply_text(f"❌ Ошибка при поиске: {e}")
 
 async def create_video_task(update: Update, prompt, image_path=None):
     headers = {"Authorization": f"Bearer {MAGIC_HOUR_KEY}", "Content-Type": "application/json"}
