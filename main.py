@@ -147,11 +147,12 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Это не фото.")
             return
 
+        # Скачиваем фото с тайм-аутом в 20 секунд
         try:
-            response = requests.get(file_url, timeout=15)
+            response = requests.get(file_url, timeout=20)
             response.raise_for_status()
             image_bytes = response.content
-            await update.message.reply_text("✅ Скачал! Отправляю в ImgBB...")
+            await update.message.reply_text(f"✅ Фото скачано ({len(image_bytes)} байт). Отправляю в ImgBB...")
         except Exception as download_err:
             await update.message.reply_text(f"❌ Ошибка скачивания: {download_err}")
             return
@@ -165,16 +166,18 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Фото на ImgBB! Запускаю Magic Hour...")
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Критическая ошибка в коде: {e}")
+        await update.message.reply_text(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
         return
 
+    # Запускаем генерацию
     await create_video_task(update, prompt, image_url=image_url)
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("video", text_to_video))
-    app.add_handler(CommandHandler("photo", photo_to_video))
+    # Измененный обработчик для фото!
+    app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
     
     async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Используй команды /video или /photo.")
