@@ -3,7 +3,7 @@ import time
 import requests
 import threading
 import concurrent.futures
-import yt_dlp
+import random
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -153,34 +153,66 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка при поиске: {e}")
 
-# --- Функция поиска музыки с маскировкой ---
+# --- Новая функция поиска музыки через Piped API ---
+PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.adminforge.de",
+    "https://pipedapi-libre.kavin.rocks",
+    "https://pipedapi.nosebs.ru"
+]
+
 def download_music(query):
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': 'music_temp.%(ext)s',
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['mweb', 'tv', 'android'],
-                'skip': ['webpage', 'authcheck'] 
-            }
-        },
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
+    instances = PIPED_INSTANCES.copy()
+    random.shuffle(instances)
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(f"ytsearch1:{query} audio", download=True)
-        if not info or not info.get('entries'):
-            return None, None, None
-        entry = info['entries'][0]
-        title = entry.get('title', 'Неизвестный трек')
-        performer = entry.get('uploader', 'Неизвестный исполнитель')
-        return title, performer, "music_temp.mp3"
+
+    for instance in instances:
+        try:
+            search_url = f"{instance}/search?q={query}&filter=music_songs"
+            print(f"Пробую сервер: {instance}")
+            res = requests.get(search_url, headers=headers, timeout=10)
+            if res.status_code != 200:
+                continue
+            
+            search_data = res.json()
+            items = search_data.get("items", [])
+            if not items:
+                continue
+            
+            video_id = items[0].get("url", "").replace("/watch?v=", "")
+            if not video_id:
+                continue
+
+            stream_url = f"{instance}/streams/{video_id}"
+            stream_res = requests.get(stream_url, headers=headers, timeout=10)
+            if stream_res.status_code != 200:
+                continue
+                
+            stream_data = stream_res.json()
+            audio_streams = stream_data.get("audioStreams", [])
+            if not audio_streams:
+                continue
+
+            best_audio = max(audio_streams, key=lambda x: x.get("bitrate", 0))
+            audio_url = best_audio.get("url")
+            
+            if audio_url:
+                audio_res = requests.get(audio_url, headers=headers, timeout=30)
+                with open("music_temp.mp3", "wb") as f:
+                    f.write(audio_res.content)
+                
+                title = items[0].get("title", "Неизвестный трек")
+                performer = items[0].get("uploaderName", "Неизвестный исполнитель")
+                return title, performer, "music_temp.mp3"
+
+        except Exception as e:
+            print(f"Ошибка на сервере {instance}: {e}")
+            continue
+
+    return None, None, None
 
 async def search_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args)
