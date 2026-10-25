@@ -153,16 +153,18 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка при поиске: {e}")
 
-# --- Новая функция поиска музыки через Piped API ---
-PIPED_INSTANCES = [
-    "https://pipedapi.kavin.rocks",
-    "https://pipedapi.adminforge.de",
-    "https://pipedapi-libre.kavin.rocks",
-    "https://pipedapi.nosebs.ru"
+# --- Новая функция поиска музыки через Invidious (без yt-dlp) ---
+INVIDIOUS_INSTANCES = [
+    "https://inv.nadeko.net",
+    "https://invidious.nerdvpn.de",
+    "https://yewtu.be",
+    "https://invidious.f5.si",
+    "https://inv.tux.pizza",
+    "https://invidious.privacyredirect.com"
 ]
 
 def download_music(query):
-    instances = PIPED_INSTANCES.copy()
+    instances = INVIDIOUS_INSTANCES.copy()
     random.shuffle(instances)
     
     headers = {
@@ -171,32 +173,33 @@ def download_music(query):
 
     for instance in instances:
         try:
-            search_url = f"{instance}/search?q={query}&filter=music_songs"
+            search_url = f"{instance}/api/v1/search?q={query}&type=video"
             print(f"Пробую сервер: {instance}")
             res = requests.get(search_url, headers=headers, timeout=10)
             if res.status_code != 200:
                 continue
             
             search_data = res.json()
-            items = search_data.get("items", [])
-            if not items:
+            if not search_data:
                 continue
             
-            video_id = items[0].get("url", "").replace("/watch?v=", "")
+            video_id = search_data[0].get("videoId")
             if not video_id:
                 continue
 
-            stream_url = f"{instance}/streams/{video_id}"
+            stream_url = f"{instance}/api/v1/videos/{video_id}"
             stream_res = requests.get(stream_url, headers=headers, timeout=10)
             if stream_res.status_code != 200:
                 continue
                 
             stream_data = stream_res.json()
-            audio_streams = stream_data.get("audioStreams", [])
+            adaptive_formats = stream_data.get("adaptiveFormats", [])
+            
+            audio_streams = [f for f in adaptive_formats if f.get("type", "").startswith("audio")]
             if not audio_streams:
                 continue
 
-            best_audio = max(audio_streams, key=lambda x: x.get("bitrate", 0))
+            best_audio = max(audio_streams, key=lambda x: int(x.get("bitrate", 0)))
             audio_url = best_audio.get("url")
             
             if audio_url:
@@ -204,8 +207,8 @@ def download_music(query):
                 with open("music_temp.mp3", "wb") as f:
                     f.write(audio_res.content)
                 
-                title = items[0].get("title", "Неизвестный трек")
-                performer = items[0].get("uploaderName", "Неизвестный исполнитель")
+                title = search_data[0].get("title", "Неизвестный трек")
+                performer = search_data[0].get("author", "Неизвестный исполнитель")
                 return title, performer, "music_temp.mp3"
 
         except Exception as e:
