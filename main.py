@@ -153,7 +153,7 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка при поиске: {e}")
 
-# --- Новая функция поиска музыки ---
+# --- Функция поиска музыки с маскировкой ---
 def download_music(query):
     ydl_opts = {
         'format': 'bestaudio/best',
@@ -161,6 +161,12 @@ def download_music(query):
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['mweb', 'tv', 'android'],
+                'skip': ['webpage', 'authcheck'] 
+            }
+        },
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
@@ -260,7 +266,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tv", send_tv_link))
     app.add_handler(CommandHandler("movie", search_movie))
-    app.add_handler(CommandHandler("music", search_music)) # Новая команда
+    app.add_handler(CommandHandler("music", search_music))
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
     
     print("Бот и IPTV сервер запущены!")
