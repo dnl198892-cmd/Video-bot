@@ -1,6 +1,8 @@
 import os
 import time
 import requests
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -10,6 +12,12 @@ MAGIC_HOUR_KEY = os.getenv("MAGIC_HOUR_KEY")
 IMGBB_KEY = os.getenv("IMGBB_KEY")
 
 MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
+
+# --- Фейковый веб-сервер для Render ---
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), BaseHTTPRequestHandler)
+    server.serve_forever()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -183,4 +191,8 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
+    # Запускаем фейковый сервер в фоне (для Render)
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+    
+    # Запускаем бота
     main()
