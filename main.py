@@ -1,16 +1,13 @@
 import os
-import time
 import requests
 import threading
 import concurrent.futures
 import asyncio
+import yt_dlp
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import magic_hour
-# Импортируем библиотеку для извлечения видео
-import anime_dl_core as ap
-from anime_dl_core.sources import Alloha
 
 # --- Ключи ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -87,6 +84,7 @@ def update_playlist():
             f.write(f"{name}\n{url}\n")
     print("Умный плейлист готов!")
 
+# --- Фейковый сервер, который больше не будет падать ---
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/my_iptv.m3u':
@@ -97,23 +95,48 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
                 with open("my_iptv.m3u", "rb") as f:
                     self.wfile.write(f.read())
             except FileNotFoundError:
-                self.send_response(404)
-                self.end_headers()
+                pass
         else:
-            self.send_response(501)
+            self.send_response(200)
             self.end_headers()
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
+# --- Функция скачивания трейлера ---
+def get_trailer_url(query):
+    ydl_opts = {
+        'format': 'best[ext=mp4]',
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['mweb', 'android'], # Маскируемся
+            }
+        }
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch1:{query} трейлер", download=False)
+            if info and info.get('entries'):
+                return info['entries'][0].get('url')
+    except Exception as e:
+        print(f"Ошибка трейлера: {e}")
+    return None
+
 # --- Telegram Бот ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привет! Я универсальный бот.\n\n"
         "🎬 **Видео:** Отправь фото с подписью `/photo текст`, и я оживлю его.\n"
-        "🍿 **Кино:** Напиши `/movie Название фильма`, и я попробую найти видео.\n"
+        "🍿 **Кино:** Напиши `/movie Название фильма`, чтобы найти информацию и трейлер.\n"
         "🎵 **Музыка:** Напиши `/music Название песни`, и я найду трек.\n"
         "📺 **ТВ:** Введи `/tv`, чтобы получить ссылку на твой личный плейлист каналов.",
         parse_mode="Markdown"
@@ -133,9 +156,7 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Напиши название фильма после команды. Пример: /movie Интерстеллар")
         return
     await update.message.reply_text(f"🔎 Ищу фильм «{query}»...")
-    
     try:
-        # 1. Ищем фильм на Кинопоиске
         headers = {"X-API-KEY": KINOPOISK_KEY}
         url = f"https://api.poiskkino.dev/v1.4/movie/search?page=1&limit=1&query={query}"
         res = requests.get(url, headers=headers, timeout=25)
@@ -147,48 +168,28 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
             
         movie = data["docs"][0]
-        kp_id = movie.get("id")
         name = movie.get("name") or movie.get("alternativeName") or "Без названия"
         year = movie.get("year", "—")
+        rating = movie.get("rating", {}).get("kp", "—")
         description = movie.get("description", "Описание отсутствует.")
         poster = movie.get("poster", {}).get("url")
         
-        await update.message.reply_text(f"🎬 Нашел: **{name}** ({year}). Пробую найти видео для просмотра...", parse_mode="Markdown")
+        # Ищем трейлер
+        await update.message.reply_text("🎬 Ищу трейлер к фильму...")
+        trailer_url = get_trailer_url(f"{name} {year}")
 
-        # 2. Пытаемся получить iframe-ссылку через Alloha
-        try:
-            # Инициализируем клиент Alloha
-            alloha = Alloha()
-            # Ищем по ID Кинопоиска
-            alloha_data = alloha.search(kp_id)
+        if trailer_url:
+            await update.message.reply_text(f"📤 Отправляю трейлер к фильму **{name}**...", parse_mode="Markdown")
+            await update.message.reply_video(
+                video=trailer_url,
+                caption=f"🎬 {name} ({year})",
+                supports_streaming=True
+            )
+        else:
+            await update.message.reply_text("😔 Трейлер не найден.")
             
-            if alloha_data and alloha_data.get("iframe_url"):
-                iframe_url = alloha_data["iframe_url"]
-                await update.message.reply_text(f"🔗 Нашел ссылку на плеер. Извлекаю видео...")
-                
-                # 3. Извлекаем прямой видеопоток через anime-dl-core
-                # Если iframe от Alloha, пробуем извлечь через Kodik (или другой плеер)
-                # Библиотека сама определит плеер по ссылке
-                result = ap.extract(iframe_url)
-                stream = result.best(kind="mp4") # Ищем MP4 для совместимости с Telegram
-                
-                if stream:
-                    await update.message.reply_text(f"📤 Отправляю видео...")
-                    await update.message.reply_video(
-                        video=stream.url,
-                        caption=f"🎬 {name} ({year})",
-                        supports_streaming=True
-                    )
-                    return
-                else:
-                    await update.message.reply_text("😔 Не удалось извлечь видеопоток.")
-            else:
-                await update.message.reply_text("😔 Не удалось найти ссылку на плеер.")
-                
-        except Exception as e:
-            await update.message.reply_text(f"⚠️ Не удалось получить видео: {e}")
-
-        # Если видео не нашлось, отправляем постер с описанием (как раньше)
+        # Отправляем постер (если он есть)
+        caption = f"🎬 **{name}** ({year})\n⭐ Рейтинг: {rating}\n\n📝 {description}"
         if poster:
             try:
                 img_res = requests.get(poster, timeout=10)
@@ -197,14 +198,14 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f.write(img_res.content)
                 
                 with open("poster_temp.jpg", "rb") as f:
-                    await update.message.reply_photo(photo=f, caption=f"🎬 **{name}** ({year})\n\n📝 {description}", parse_mode="Markdown")
+                    await update.message.reply_photo(photo=f, caption=caption, parse_mode="Markdown")
                 
                 os.remove("poster_temp.jpg")
             except Exception:
-                await update.message.reply_text(f"🎬 **{name}** ({year})\n\n📝 {description}", parse_mode="Markdown")
+                await update.message.reply_text(caption, parse_mode="Markdown")
         else:
-            await update.message.reply_text(f"🎬 **{name}** ({year})\n\n📝 {description}", parse_mode="Markdown")
-
+            await update.message.reply_text(caption, parse_mode="Markdown")
+            
     except requests.exceptions.Timeout:
         await update.message.reply_text("❌ Сервер Кинопоиска не отвечает. Попробуй позже.")
     except Exception as e:
