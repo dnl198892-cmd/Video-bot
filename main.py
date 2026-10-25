@@ -3,6 +3,7 @@ import time
 import requests
 import threading
 import concurrent.futures
+import asyncio
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -152,7 +153,6 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка при поиске: {e}")
 
-# --- Поиск музыки через iTunes API (без блокировок) ---
 async def search_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args)
     if not query:
@@ -211,7 +211,7 @@ async def create_video_task(update: Update, prompt, image_path=None):
         project_id = data.get("project_id") or data.get("id")
         
         for i in range(60): 
-            time.sleep(10)
+            await asyncio.sleep(10) # ИСПРАВЛЕНО: теперь не блокирует бота
             check = requests.get(f"{MAGIC_HOUR_URL}/projects/{project_id}", headers=headers, timeout=30)
             result = check.json()
             if str(result.get("status", "")).lower() in ["complete", "completed", "succeeded"]:
@@ -237,6 +237,9 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.remove(temp_image_path)
     await create_video_task(update, prompt, image_path=uploaded_file_path)
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    print(f"Ошибка: {context.error}")
+
 def main():
     threading.Thread(target=run_server, daemon=True).start()
     threading.Thread(target=update_playlist, daemon=True).start()
@@ -247,6 +250,7 @@ def main():
     app.add_handler(CommandHandler("movie", search_movie))
     app.add_handler(CommandHandler("music", search_music))
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
+    app.add_error_handler(error_handler) # Добавили обработчик
     
     print("Бот и IPTV сервер запущены!")
     app.run_polling()
