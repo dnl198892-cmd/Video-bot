@@ -14,11 +14,18 @@ MAGIC_HOUR_KEY = os.getenv("MAGIC_HOUR_KEY")
 MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
 mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY)
 
-# --- Ссылки на IPTV плейлисты ---
+# --- Ссылки на IPTV плейлисты (Только Беларусь, Россия, Кино и Спорт) ---
 IPTV_URLS = [
-    "https://iptv-org.github.io/iptv/languages/rus.m3u",
-    "https://iptv-org.github.io/iptv/categories/movies.m3u",
-    "https://iptv-org.github.io/iptv/categories/sports.m3u"
+    "https://iptv-org.github.io/iptv/countries/by.m3u",     # Беларусь
+    "https://iptv-org.github.io/iptv/countries/ru.m3u",     # Россия
+    "https://iptv-org.github.io/iptv/categories/movies.m3u",# Кино (мировые, но отфильтруем)
+    "https://iptv-org.github.io/iptv/categories/sports.m3u" # Спорт (мировые, но отфильтруем)
+]
+
+# --- Список приоритетных каналов (они будут в самом верху) ---
+PRIORITY_CHANNELS = [
+    "Беларусь 1", "Беларусь 2", "Беларусь 3", "Беларусь 4", "Беларусь 5", 
+    "ОНТ", "НТВ", "Мир", "СТВ", "РТР-Беларусь", "Первый канал", "Россия 1", "Матч ТВ"
 ]
 
 def check_channel(url):
@@ -41,11 +48,19 @@ def update_playlist():
                     if line.startswith('#EXTINF'):
                         current_name = line
                     elif line.startswith('http'):
-                        channels.append((current_name, line.strip()))
+                        # Фильтруем мировое кино/спорт: оставляем только если в названии есть русские буквы
+                        if 'categories' in url:
+                            if any(c in current_name for c in "абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"):
+                                channels.append((current_name, line.strip()))
+                        else:
+                            channels.append((current_name, line.strip()))
         except Exception as e:
             pass
 
-    print(f"Всего каналов до проверки: {len(channels)}. Проверяю (займет пару минут)...")
+    # Убираем дубликаты по ссылке
+    channels = list(dict.fromkeys(channels))
+    print(f"Всего каналов до проверки: {len(channels)}. Проверяю...")
+
     working_channels = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         future_to_channel = {executor.submit(check_channel, ch[1]): ch for ch in channels}
@@ -54,10 +69,28 @@ def update_playlist():
             if future.result():
                 working_channels.append(ch)
 
-    print(f"Рабочих каналов: {len(working_channels)}. Сохраняю файл...")
+    print(f"Рабочих каналов: {len(working_channels)}. Сортирую и сохраняю...")
+    
+    # --- СОРТИРОВКА ---
+    priority_list = []
+    other_list = []
+    
+    for name, url in working_channels:
+        # Если название содержит одно из приоритетных слов — в топ!
+        if any(p.lower() in name.lower() for p in PRIORITY_CHANNELS):
+            priority_list.append((name, url))
+        else:
+            other_list.append((name, url))
+            
+    # Остальные сортируем по алфавиту
+    other_list.sort(key=lambda x: x[0].lower())
+    
+    # Собираем финальный список
+    final_channels = priority_list + other_list
+
     with open("my_iptv.m3u", "w", encoding="utf-8") as f:
         f.write("#EXTM3U\n")
-        for name, url in working_channels:
+        for name, url in final_channels:
             f.write(f"{name}\n{url}\n")
     print("Умный плейлист готов!")
 
@@ -91,13 +124,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def send_tv_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ВАЖНО: Замените адрес на свой актуальный адрес Render
     playlist_url = "https://video-bot-kf62.onrender.com/my_iptv.m3u"
-    
     await update.message.reply_text(
-        f"📺 Вот ссылка на твой плейлист:\n\n"
-        f"`{playlist_url}`\n\n"
-        f"Скопируй её и вставь в OTT Navigator. Я регулярно обновляю этот файл, оставляя только рабочие каналы!",
+        f"📺 Вот ссылка на твой плейлист:\n\n`{playlist_url}`\n\n"
+        f"Скопируй её и вставь в OTT Navigator. Я регулярно обновляю этот файл!",
         parse_mode="Markdown"
     )
 
@@ -138,7 +168,6 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = update.message.caption or ""
     prompt = caption.replace("/photo", "").strip()
     if not prompt: return
-
     photo_file = await update.message.photo[-1].get_file()
     temp_image_path = "temp_image.jpg"
     await photo_file.download_to_drive(custom_path=temp_image_path)
@@ -149,14 +178,10 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     threading.Thread(target=run_server, daemon=True).start()
     threading.Thread(target=update_playlist, daemon=True).start()
-    
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    # Добавляем команды
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("tv", send_tv_link)) # <--- НОВАЯ КОМАНДА!
+    app.add_handler(CommandHandler("tv", send_tv_link))
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
-    
     print("Бот и IPTV сервер запущены!")
     app.run_polling()
 
