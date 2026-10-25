@@ -7,13 +7,10 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import magic_hour
 
-# Бот берет ключи из переменных окружения
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 MAGIC_HOUR_KEY = os.getenv("MAGIC_HOUR_KEY")
-
 MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
 
-# Инициализируем клиент Magic Hour
 mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY)
 
 def run_dummy_server():
@@ -49,7 +46,9 @@ async def create_video_task(update: Update, prompt, image_path=None):
     if image_path:
         payload = {
             "model": "ltx-2.5",
-            "image_file_path": image_path, # Используем путь, полученный от SDK
+            "assets": {
+                "image_file_path": image_path
+            },
             "end_seconds": 5,
             "resolution": "480p",
             "style": {"prompt": prompt}
@@ -121,20 +120,17 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update.message.photo:
             photo_file = await update.message.photo[-1].get_file()
-            # Скачиваем фото во временный файл
             temp_image_path = "temp_image.jpg"
             await photo_file.download_to_drive(custom_path=temp_image_path)
             await update.message.reply_text("✅ Фото скачано. Загружаю в Magic Hour...")
             
-            # Загружаем файл в Magic Hour и получаем путь
             uploaded_file_path = mh_client.v1.files.upload_file(temp_image_path)
-            os.remove(temp_image_path) # Удаляем временный файл
+            os.remove(temp_image_path)
             
             await update.message.reply_text("✅ Фото загружено в Magic Hour! Запускаю генерацию...")
         else:
             await update.message.reply_text("❌ Это не фото.")
             return
-            
     except Exception as e:
         await update.message.reply_text(f"❌ ОШИБКА ПРИ ЗАГРУЗКЕ: {e}")
         return
