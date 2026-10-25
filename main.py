@@ -5,15 +5,17 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import magic_hour
 
-# Бот берет ключи из переменных окружения сервера
+# Бот берет ключи из переменных окружения
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 MAGIC_HOUR_KEY = os.getenv("MAGIC_HOUR_KEY")
-IMGBB_KEY = os.getenv("IMGBB_KEY")
 
 MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
 
-# --- Фейковый веб-сервер для Render ---
+# Инициализируем клиент Magic Hour
+mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY)
+
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), BaseHTTPRequestHandler)
@@ -26,26 +28,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🖼️ Отправь фото с подписью /photo текст — оживить фото"
     )
 
-def upload_to_imgbb(image_bytes):
-    url = "https://api.imgbb.com/1/upload"
-    payload = {"key": IMGBB_KEY}
-    files = {"image": image_bytes}
-    # Маскируемся под браузер, чтобы ImgBB не блокировал сервер
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    try:
-        response = requests.post(url, data=payload, files=files, headers=headers, timeout=30)
-        data = response.json()
-        if data.get("success"):
-            return data["data"]["url"]
-        else:
-            print(f"Ошибка ImgBB: {data}")
-            return None
-    except Exception as e:
-        print(f"Ошибка ImgBB: {e}")
-        return None
-
 async def send_video_to_user(update: Update, video_url):
     await update.message.reply_text("📥 Скачиваю видео, чтобы отправить вам в Telegram...")
     try:
@@ -53,23 +35,21 @@ async def send_video_to_user(update: Update, video_url):
         temp_file = "temp_video.mp4"
         with open(temp_file, "wb") as f:
             f.write(video_data)
-        
         with open(temp_file, "rb") as f:
             await update.message.reply_video(video=f, caption="Ваше видео готово! 🎉")
-        
         os.remove(temp_file)
     except Exception as e:
         await update.message.reply_text(f"❌ Не удалось отправить видео: {e}\nСсылка: {video_url}")
 
-async def create_video_task(update: Update, prompt, image_url=None):
+async def create_video_task(update: Update, prompt, image_path=None):
     await update.message.reply_text("🎬 Создаю видео через Magic Hour... Жди (до 5 минут)!")
 
     headers = {"Authorization": f"Bearer {MAGIC_HOUR_KEY}", "Content-Type": "application/json"}
     
-    if image_url:
+    if image_path:
         payload = {
             "model": "ltx-2.5",
-            "image_url": image_url,
+            "image_file_path": image_path, # Используем путь, полученный от SDK
             "end_seconds": 5,
             "resolution": "480p",
             "style": {"prompt": prompt}
@@ -88,32 +68,24 @@ async def create_video_task(update: Update, prompt, image_url=None):
 
     try:
         res = requests.post(endpoint, headers=headers, json=payload, timeout=30)
-        
         if res.status_code != 200:
             await update.message.reply_text(f"❌ Ошибка Magic Hour: {res.status_code}\n{res.text}")
             return
 
         data = res.json()
         project_id = data.get("project_id") or data.get("id")
-        
         if not project_id:
             await update.message.reply_text(f"Ошибка: сервер не выдал ID. Ответ: {data}")
             return
 
         final_url = None
-        for i in range(30): 
+        for _ in range(30): 
             time.sleep(10)
-            check = requests.get(
-                f"{MAGIC_HOUR_URL}/projects/{project_id}",
-                headers=headers,
-                timeout=30
-            )
+            check = requests.get(f"{MAGIC_HOUR_URL}/projects/{project_id}", headers=headers, timeout=30)
             if check.status_code != 200:
                 continue
-                
             result = check.json()
             status = str(result.get("status", "")).lower()
-            
             if status in ["complete", "completed", "succeeded"]:
                 downloads = result.get("downloads")
                 if downloads and isinstance(downloads, list) and len(downloads) > 0:
@@ -126,7 +98,7 @@ async def create_video_task(update: Update, prompt, image_url=None):
         if final_url:
             await send_video_to_user(update, final_url)
         else:
-            await update.message.reply_text("Превышено время ожидания (5 минут). Сервер все еще рендерит видео.")
+            await update.message.reply_text("Превышено время ожидания (5 минут).")
 
     except Exception as e:
         await update.message.reply_text(f"Критическая ошибка: {e}")
@@ -140,10 +112,8 @@ async def text_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Тест: получил фото...")
-    
     caption = update.message.caption or ""
     prompt = caption.replace("/photo", "").strip()
-    
     if not prompt:
         await update.message.reply_text("⚠️ Напиши текст после /photo в подписи к фото.")
         return
@@ -151,34 +121,25 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update.message.photo:
             photo_file = await update.message.photo[-1].get_file()
-            file_url = photo_file.file_path
-            await update.message.reply_text("✅ Ссылка получена. Пробую скачать...")
+            # Скачиваем фото во временный файл
+            temp_image_path = "temp_image.jpg"
+            await photo_file.download_to_drive(custom_path=temp_image_path)
+            await update.message.reply_text("✅ Фото скачано. Загружаю в Magic Hour...")
+            
+            # Загружаем файл в Magic Hour и получаем путь
+            uploaded_file_path = mh_client.v1.files.upload_file(temp_image_path)
+            os.remove(temp_image_path) # Удаляем временный файл
+            
+            await update.message.reply_text("✅ Фото загружено в Magic Hour! Запускаю генерацию...")
         else:
             await update.message.reply_text("❌ Это не фото.")
             return
-
-        try:
-            response = requests.get(file_url, timeout=20)
-            response.raise_for_status()
-            image_bytes = response.content
-            await update.message.reply_text(f"✅ Фото скачано ({len(image_bytes)} байт). Отправляю в ImgBB...")
-        except Exception as download_err:
-            await update.message.reply_text(f"❌ Ошибка скачивания: {download_err}")
-            return
             
-        image_url = upload_to_imgbb(image_bytes)
-        
-        if not image_url:
-            await update.message.reply_text("❌ ImgBB не принял фото (проверь ключ).")
-            return
-            
-        await update.message.reply_text("✅ Фото на ImgBB! Запускаю Magic Hour...")
-        
     except Exception as e:
-        await update.message.reply_text(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        await update.message.reply_text(f"❌ ОШИБКА ПРИ ЗАГРУЗКЕ: {e}")
         return
 
-    await create_video_task(update, prompt, image_url=image_url)
+    await create_video_task(update, prompt, image_path=uploaded_file_path)
 
 async def text_photo_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Чтобы оживить фото, прикрепи его к сообщению и в подписи напиши /photo и текст.")
