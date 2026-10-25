@@ -133,9 +133,12 @@ async def text_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Тест: получил фото...")
     
-    prompt = " ".join(context.args)
+    # Берем текст из подписи к фото
+    caption = update.message.caption or ""
+    prompt = caption.replace("/photo", "").strip()
+    
     if not prompt:
-        await update.message.reply_text("⚠️ Нет текста после /photo.")
+        await update.message.reply_text("⚠️ Напиши текст после /photo в подписи к фото.")
         return
 
     try:
@@ -172,15 +175,22 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Запускаем генерацию
     await create_video_task(update, prompt, image_url=image_url)
 
+async def text_photo_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Чтобы оживить фото, прикрепи его к сообщению и в подписи напиши /photo и текст.")
+
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("video", text_to_video))
-    # Измененный обработчик для фото!
+    
+    # Обработчик для фото (без команды, просто фото)
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
     
+    # Обработчик, если просто пишут /photo текстом
+    app.add_handler(CommandHandler("photo", text_photo_prompt))
+    
     async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("Используй команды /video или /photo.")
+        await update.message.reply_text("Используй команды /video (текст) или отправь фото с подписью /photo.")
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, fallback))
 
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
