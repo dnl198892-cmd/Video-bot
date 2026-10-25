@@ -30,10 +30,18 @@ def upload_to_imgbb(image_bytes):
     url = "https://api.imgbb.com/1/upload"
     payload = {"key": IMGBB_KEY}
     files = {"image": image_bytes}
+    # Маскируемся под браузер, чтобы ImgBB не блокировал сервер
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
     try:
-        response = requests.post(url, data=payload, files=files, timeout=30)
+        response = requests.post(url, data=payload, files=files, headers=headers, timeout=30)
         data = response.json()
-        return data["data"]["url"] if data.get("success") else None
+        if data.get("success"):
+            return data["data"]["url"]
+        else:
+            print(f"Ошибка ImgBB: {data}")
+            return None
     except Exception as e:
         print(f"Ошибка ImgBB: {e}")
         return None
@@ -133,7 +141,6 @@ async def text_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Тест: получил фото...")
     
-    # Берем текст из подписи к фото
     caption = update.message.caption or ""
     prompt = caption.replace("/photo", "").strip()
     
@@ -150,7 +157,6 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Это не фото.")
             return
 
-        # Скачиваем фото с тайм-аутом в 20 секунд
         try:
             response = requests.get(file_url, timeout=20)
             response.raise_for_status()
@@ -172,7 +178,6 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
         return
 
-    # Запускаем генерацию
     await create_video_task(update, prompt, image_url=image_url)
 
 async def text_photo_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -182,11 +187,7 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("video", text_to_video))
-    
-    # Обработчик для фото (без команды, просто фото)
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
-    
-    # Обработчик, если просто пишут /photo текстом
     app.add_handler(CommandHandler("photo", text_photo_prompt))
     
     async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -204,8 +205,5 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    # Запускаем фейковый сервер в фоне (для Render)
     threading.Thread(target=run_dummy_server, daemon=True).start()
-    
-    # Запускаем бота
     main()
