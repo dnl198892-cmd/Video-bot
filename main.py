@@ -8,6 +8,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import magic_hour
+# Импортируем библиотеку для извлечения видео
+import anime_dl_core as ap
+from anime_dl_core.sources import Alloha
 
 # --- Ключи ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -110,7 +113,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привет! Я универсальный бот.\n\n"
         "🎬 **Видео:** Отправь фото с подписью `/photo текст`, и я оживлю его.\n"
-        "🍿 **Кино:** Напиши `/movie Название фильма`, чтобы найти информацию.\n"
+        "🍿 **Кино:** Напиши `/movie Название фильма`, и я попробую найти видео.\n"
         "🎵 **Музыка:** Напиши `/music Название песни`, и я найду трек.\n"
         "📺 **ТВ:** Введи `/tv`, чтобы получить ссылку на твой личный плейлист каналов.",
         parse_mode="Markdown"
@@ -130,7 +133,9 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Напиши название фильма после команды. Пример: /movie Интерстеллар")
         return
     await update.message.reply_text(f"🔎 Ищу фильм «{query}»...")
+    
     try:
+        # 1. Ищем фильм на Кинопоиске
         headers = {"X-API-KEY": KINOPOISK_KEY}
         url = f"https://api.poiskkino.dev/v1.4/movie/search?page=1&limit=1&query={query}"
         res = requests.get(url, headers=headers, timeout=25)
@@ -142,13 +147,48 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
             
         movie = data["docs"][0]
+        kp_id = movie.get("id")
         name = movie.get("name") or movie.get("alternativeName") or "Без названия"
         year = movie.get("year", "—")
-        rating = movie.get("rating", {}).get("kp", "—")
         description = movie.get("description", "Описание отсутствует.")
         poster = movie.get("poster", {}).get("url")
-        caption = f"🎬 **{name}** ({year})\n⭐ Рейтинг: {rating}\n\n📝 {description}"
         
+        await update.message.reply_text(f"🎬 Нашел: **{name}** ({year}). Пробую найти видео для просмотра...", parse_mode="Markdown")
+
+        # 2. Пытаемся получить iframe-ссылку через Alloha
+        try:
+            # Инициализируем клиент Alloha
+            alloha = Alloha()
+            # Ищем по ID Кинопоиска
+            alloha_data = alloha.search(kp_id)
+            
+            if alloha_data and alloha_data.get("iframe_url"):
+                iframe_url = alloha_data["iframe_url"]
+                await update.message.reply_text(f"🔗 Нашел ссылку на плеер. Извлекаю видео...")
+                
+                # 3. Извлекаем прямой видеопоток через anime-dl-core
+                # Если iframe от Alloha, пробуем извлечь через Kodik (или другой плеер)
+                # Библиотека сама определит плеер по ссылке
+                result = ap.extract(iframe_url)
+                stream = result.best(kind="mp4") # Ищем MP4 для совместимости с Telegram
+                
+                if stream:
+                    await update.message.reply_text(f"📤 Отправляю видео...")
+                    await update.message.reply_video(
+                        video=stream.url,
+                        caption=f"🎬 {name} ({year})",
+                        supports_streaming=True
+                    )
+                    return
+                else:
+                    await update.message.reply_text("😔 Не удалось извлечь видеопоток.")
+            else:
+                await update.message.reply_text("😔 Не удалось найти ссылку на плеер.")
+                
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Не удалось получить видео: {e}")
+
+        # Если видео не нашлось, отправляем постер с описанием (как раньше)
         if poster:
             try:
                 img_res = requests.get(poster, timeout=10)
@@ -157,14 +197,14 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f.write(img_res.content)
                 
                 with open("poster_temp.jpg", "rb") as f:
-                    await update.message.reply_photo(photo=f, caption=caption, parse_mode="Markdown")
+                    await update.message.reply_photo(photo=f, caption=f"🎬 **{name}** ({year})\n\n📝 {description}", parse_mode="Markdown")
                 
                 os.remove("poster_temp.jpg")
             except Exception:
-                await update.message.reply_text(caption + "\n\n(Не удалось загрузить постер)", parse_mode="Markdown")
+                await update.message.reply_text(f"🎬 **{name}** ({year})\n\n📝 {description}", parse_mode="Markdown")
         else:
-            await update.message.reply_text(caption, parse_mode="Markdown")
-            
+            await update.message.reply_text(f"🎬 **{name}** ({year})\n\n📝 {description}", parse_mode="Markdown")
+
     except requests.exceptions.Timeout:
         await update.message.reply_text("❌ Сервер Кинопоиска не отвечает. Попробуй позже.")
     except Exception as e:
@@ -233,7 +273,7 @@ async def create_video_task(update: Update, prompt, image_path=None):
             result = check.json()
             if str(result.get("status", "")).lower() in ["complete", "completed", "succeeded"]:
                 video_url = result["downloads"][0].get("url")
-                await update.message.reply_video(video=video_url, caption="Ваше видео готово!")
+                await update.message.reply_video(video=video_url, caption="Ваше видео готово!", supports_streaming=True)
                 return
             elif str(result.get("status", "")).lower() in ["failed", "error"]:
                 await update.message.reply_text(f"❌ Ошибка генерации: {result}")
@@ -250,7 +290,7 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo_file = await update.message.photo[-1].get_file()
     temp_image_path = "temp_image.jpg"
     await photo_file.download_to_drive(custom_path=temp_image_path)
-    uploaded_file_path = mh_client.v1.files.upload_file(temp_image_path)
+    uploaded_file_path = mh_client.v1.files.upload_image(temp_image_path)
     os.remove(temp_image_path)
     await create_video_task(update, prompt, image_path=uploaded_file_path)
 
