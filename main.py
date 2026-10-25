@@ -21,21 +21,16 @@ IPTV_URLS = [
     "https://iptv-org.github.io/iptv/categories/sports.m3u"
 ]
 
-# Функция проверки одного канала
 def check_channel(url):
     try:
-        # Проверяем, отвечает ли сервер канала (таймаут 3 секунды)
         response = requests.get(url, stream=True, timeout=3)
         return response.status_code == 200
     except:
         return False
 
-# --- Умная сборка плейлиста ---
 def update_playlist():
     print("Начинаю умную сборку IPTV плейлиста...")
     channels = []
-    
-    # 1. Скачиваем все плейлисты и собираем каналы
     for url in IPTV_URLS:
         try:
             res = requests.get(url, timeout=20)
@@ -47,14 +42,10 @@ def update_playlist():
                         current_name = line
                     elif line.startswith('http'):
                         channels.append((current_name, line.strip()))
-            print(f"Успешно скачан: {url}")
         except Exception as e:
-            print(f"Ошибка загрузки {url}: {e}")
+            pass
 
-    print(f"Всего каналов до проверки: {len(channels)}")
-    print("Проверяю каналы (это займет несколько минут)...")
-
-    # 2. Проверяем каналы параллельно (по 20 штук одновременно)
+    print(f"Всего каналов до проверки: {len(channels)}. Проверяю (займет пару минут)...")
     working_channels = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         future_to_channel = {executor.submit(check_channel, ch[1]): ch for ch in channels}
@@ -63,18 +54,13 @@ def update_playlist():
             if future.result():
                 working_channels.append(ch)
 
-    print(f"Рабочих каналов найдено: {len(working_channels)}")
-
-    # 3. Сохраняем только рабочие
-    combined_content = "#EXTM3U\n"
-    for name, url in working_channels:
-        combined_content += f"{name}\n{url}\n"
-    
+    print(f"Рабочих каналов: {len(working_channels)}. Сохраняю файл...")
     with open("my_iptv.m3u", "w", encoding="utf-8") as f:
-        f.write(combined_content)
-    print("Умный плейлист успешно собран и сохранен!")
+        f.write("#EXTM3U\n")
+        for name, url in working_channels:
+            f.write(f"{name}\n{url}\n")
+    print("Умный плейлист готов!")
 
-# --- Веб-сервер ---
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/my_iptv.m3u':
@@ -96,9 +82,24 @@ def run_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# --- Бот (без изменений) ---
+# --- Логика Telegram Бота ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я создаю видео.\nОтправь фото с подписью /photo текст.")
+    await update.message.reply_text(
+        "Привет! Я универсальный бот.\n\n"
+        "🎬 **Создание видео:** Отправь фото с подписью `/photo текст`, и я оживлю его.\n\n"
+        "📺 **Телевидение:** Введи команду /tv, чтобы получить ссылку на твой личный (и уже отфильтрованный!) плейлист."
+    )
+
+async def send_tv_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ВАЖНО: Замените адрес на свой актуальный адрес Render
+    playlist_url = "https://video-bot-kf62.onrender.com/my_iptv.m3u"
+    
+    await update.message.reply_text(
+        f"📺 Вот ссылка на твой плейлист:\n\n"
+        f"`{playlist_url}`\n\n"
+        f"Скопируй её и вставь в OTT Navigator. Я регулярно обновляю этот файл, оставляя только рабочие каналы!",
+        parse_mode="Markdown"
+    )
 
 async def create_video_task(update: Update, prompt, image_path=None):
     headers = {"Authorization": f"Bearer {MAGIC_HOUR_KEY}", "Content-Type": "application/json"}
@@ -146,18 +147,17 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await create_video_task(update, prompt, image_path=uploaded_file_path)
 
 def main():
-    # 1. Запускаем веб-сервер СРАЗУ, чтобы OTT Navigator мог к нему подключиться
     threading.Thread(target=run_server, daemon=True).start()
-    
-    # 2. Запускаем сборку и проверку плейлиста в фоне
     threading.Thread(target=update_playlist, daemon=True).start()
     
-    # 3. Запускаем бота
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # Добавляем команды
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("tv", send_tv_link)) # <--- НОВАЯ КОМАНДА!
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
     
-    print("Бот и IPTV сервер запущены! Начинаю проверку каналов в фоне...")
+    print("Бот и IPTV сервер запущены!")
     app.run_polling()
 
 if __name__ == "__main__":
