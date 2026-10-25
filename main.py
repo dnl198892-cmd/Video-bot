@@ -133,12 +133,14 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         headers = {"X-API-KEY": KINOPOISK_KEY}
         url = f"https://api.poiskkino.dev/v1.4/movie/search?page=1&limit=1&query={query}"
-        res = requests.get(url, headers=headers, timeout=15)
+        res = requests.get(url, headers=headers, timeout=25)
         res.raise_for_status()
         data = res.json()
+        
         if not data.get("docs"):
             await update.message.reply_text("😔 Ничего не нашлось. Попробуй другое название.")
             return
+            
         movie = data["docs"][0]
         name = movie.get("name") or movie.get("alternativeName") or "Без названия"
         year = movie.get("year", "—")
@@ -146,10 +148,25 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         description = movie.get("description", "Описание отсутствует.")
         poster = movie.get("poster", {}).get("url")
         caption = f"🎬 **{name}** ({year})\n⭐ Рейтинг: {rating}\n\n📝 {description}"
+        
         if poster:
-            await update.message.reply_photo(photo=poster, caption=caption, parse_mode="Markdown")
+            try:
+                img_res = requests.get(poster, timeout=10)
+                img_res.raise_for_status()
+                with open("poster_temp.jpg", "wb") as f:
+                    f.write(img_res.content)
+                
+                with open("poster_temp.jpg", "rb") as f:
+                    await update.message.reply_photo(photo=f, caption=caption, parse_mode="Markdown")
+                
+                os.remove("poster_temp.jpg")
+            except Exception:
+                await update.message.reply_text(caption + "\n\n(Не удалось загрузить постер)", parse_mode="Markdown")
         else:
             await update.message.reply_text(caption, parse_mode="Markdown")
+            
+    except requests.exceptions.Timeout:
+        await update.message.reply_text("❌ Сервер Кинопоиска не отвечает. Попробуй позже.")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка при поиске: {e}")
 
@@ -211,7 +228,7 @@ async def create_video_task(update: Update, prompt, image_path=None):
         project_id = data.get("project_id") or data.get("id")
         
         for i in range(60): 
-            await asyncio.sleep(10) # ИСПРАВЛЕНО: теперь не блокирует бота
+            await asyncio.sleep(10)
             check = requests.get(f"{MAGIC_HOUR_URL}/projects/{project_id}", headers=headers, timeout=30)
             result = check.json()
             if str(result.get("status", "")).lower() in ["complete", "completed", "succeeded"]:
@@ -250,7 +267,7 @@ def main():
     app.add_handler(CommandHandler("movie", search_movie))
     app.add_handler(CommandHandler("music", search_music))
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
-    app.add_error_handler(error_handler) # Добавили обработчик
+    app.add_error_handler(error_handler)
     
     print("Бот и IPTV сервер запущены!")
     app.run_polling()
