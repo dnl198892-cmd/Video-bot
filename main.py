@@ -3,6 +3,7 @@ import time
 import requests
 import threading
 import concurrent.futures
+import yt_dlp
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -110,6 +111,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Привет! Я универсальный бот.\n\n"
         "🎬 **Видео:** Отправь фото с подписью `/photo текст`, и я оживлю его.\n"
         "🍿 **Кино:** Напиши `/movie Название фильма`, чтобы найти информацию.\n"
+        "🎵 **Музыка:** Напиши `/music Название песни`, и я пришлю аудио.\n"
         "📺 **ТВ:** Введи `/tv`, чтобы получить ссылку на твой личный плейлист каналов.",
         parse_mode="Markdown"
     )
@@ -127,36 +129,84 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not query:
         await update.message.reply_text("Напиши название фильма после команды. Пример: /movie Интерстеллар")
         return
-
     await update.message.reply_text(f"🔎 Ищу фильм «{query}»...")
-
     try:
         headers = {"X-API-KEY": KINOPOISK_KEY}
         url = f"https://api.poiskkino.dev/v1.4/movie/search?page=1&limit=1&query={query}"
         res = requests.get(url, headers=headers, timeout=15)
         res.raise_for_status()
         data = res.json()
-
         if not data.get("docs"):
             await update.message.reply_text("😔 Ничего не нашлось. Попробуй другое название.")
             return
-
         movie = data["docs"][0]
         name = movie.get("name") or movie.get("alternativeName") or "Без названия"
         year = movie.get("year", "—")
         rating = movie.get("rating", {}).get("kp", "—")
         description = movie.get("description", "Описание отсутствует.")
         poster = movie.get("poster", {}).get("url")
-
         caption = f"🎬 **{name}** ({year})\n⭐ Рейтинг: {rating}\n\n📝 {description}"
-
         if poster:
             await update.message.reply_photo(photo=poster, caption=caption, parse_mode="Markdown")
         else:
             await update.message.reply_text(caption, parse_mode="Markdown")
-
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка при поиске: {e}")
+
+# --- Новая функция поиска музыки ---
+def download_music(query):
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': 'music_temp.%(ext)s',
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(f"ytsearch1:{query} audio", download=True)
+        if not info or not info.get('entries'):
+            return None, None, None
+        entry = info['entries'][0]
+        title = entry.get('title', 'Неизвестный трек')
+        performer = entry.get('uploader', 'Неизвестный исполнитель')
+        return title, performer, "music_temp.mp3"
+
+async def search_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = " ".join(context.args)
+    if not query:
+        await update.message.reply_text("Напиши название песни или исполнителя. Пример: /music Imagine Dragons Believer")
+        return
+
+    await update.message.reply_text(f"🎵 Ищу песню «{query}»... Это может занять 10-20 секунд.")
+
+    try:
+        title, performer, file_path = download_music(query)
+        
+        if not file_path or not os.path.exists(file_path):
+            await update.message.reply_text("😔 Не удалось найти или скачать эту песню. Попробуй другое название.")
+            return
+
+        await update.message.reply_text("📤 Отправляю аудио...")
+        
+        with open(file_path, "rb") as audio_file:
+            await update.message.reply_audio(
+                audio=audio_file,
+                title=title,
+                performer=performer,
+                caption=f"🎵 {title} — {performer}"
+            )
+        
+        os.remove(file_path)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка при поиске музыки: {e}")
+        if os.path.exists("music_temp.mp3"):
+            os.remove("music_temp.mp3")
 
 async def create_video_task(update: Update, prompt, image_path=None):
     headers = {"Authorization": f"Bearer {MAGIC_HOUR_KEY}", "Content-Type": "application/json"}
@@ -210,6 +260,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tv", send_tv_link))
     app.add_handler(CommandHandler("movie", search_movie))
+    app.add_handler(CommandHandler("music", search_music)) # Новая команда
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
     
     print("Бот и IPTV сервер запущены!")
