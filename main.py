@@ -11,18 +11,18 @@ import magic_hour
 # --- Ключи ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 MAGIC_HOUR_KEY = os.getenv("MAGIC_HOUR_KEY")
+KINOPOISK_KEY = os.getenv("KINOPOISK_KEY")
 MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
 mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY)
 
-# --- Ссылки на IPTV плейлисты (Только Беларусь, Россия, Кино и Спорт) ---
+# --- IPTV настройки ---
 IPTV_URLS = [
-    "https://iptv-org.github.io/iptv/countries/by.m3u",     # Беларусь
-    "https://iptv-org.github.io/iptv/countries/ru.m3u",     # Россия
-    "https://iptv-org.github.io/iptv/categories/movies.m3u",# Кино (мировые, но отфильтруем)
-    "https://iptv-org.github.io/iptv/categories/sports.m3u" # Спорт (мировые, но отфильтруем)
+    "https://iptv-org.github.io/iptv/countries/by.m3u",
+    "https://iptv-org.github.io/iptv/countries/ru.m3u",
+    "https://iptv-org.github.io/iptv/categories/movies.m3u",
+    "https://iptv-org.github.io/iptv/categories/sports.m3u"
 ]
 
-# --- Список приоритетных каналов (они будут в самом верху) ---
 PRIORITY_CHANNELS = [
     "Беларусь 1", "Беларусь 2", "Беларусь 3", "Беларусь 4", "Беларусь 5", 
     "ОНТ", "НТВ", "Мир", "СТВ", "РТР-Беларусь", "Первый канал", "Россия 1", "Матч ТВ"
@@ -48,18 +48,16 @@ def update_playlist():
                     if line.startswith('#EXTINF'):
                         current_name = line
                     elif line.startswith('http'):
-                        # Фильтруем мировое кино/спорт: оставляем только если в названии есть русские буквы
                         if 'categories' in url:
                             if any(c in current_name for c in "абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"):
                                 channels.append((current_name, line.strip()))
                         else:
                             channels.append((current_name, line.strip()))
-        except Exception as e:
+        except Exception:
             pass
 
-    # Убираем дубликаты по ссылке
     channels = list(dict.fromkeys(channels))
-    print(f"Всего каналов до проверки: {len(channels)}. Проверяю...")
+    print(f"Всего каналов: {len(channels)}. Проверяю...")
 
     working_channels = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
@@ -69,23 +67,14 @@ def update_playlist():
             if future.result():
                 working_channels.append(ch)
 
-    print(f"Рабочих каналов: {len(working_channels)}. Сортирую и сохраняю...")
-    
-    # --- СОРТИРОВКА ---
     priority_list = []
     other_list = []
-    
     for name, url in working_channels:
-        # Если название содержит одно из приоритетных слов — в топ!
         if any(p.lower() in name.lower() for p in PRIORITY_CHANNELS):
             priority_list.append((name, url))
         else:
             other_list.append((name, url))
-            
-    # Остальные сортируем по алфавиту
     other_list.sort(key=lambda x: x[0].lower())
-    
-    # Собираем финальный список
     final_channels = priority_list + other_list
 
     with open("my_iptv.m3u", "w", encoding="utf-8") as f:
@@ -115,12 +104,14 @@ def run_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# --- Логика Telegram Бота ---
+# --- Telegram Бот ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привет! Я универсальный бот.\n\n"
-        "🎬 **Создание видео:** Отправь фото с подписью `/photo текст`, и я оживлю его.\n\n"
-        "📺 **Телевидение:** Введи команду /tv, чтобы получить ссылку на твой личный (и уже отфильтрованный!) плейлист."
+        "🎬 **Видео:** Отправь фото с подписью `/photo текст`, и я оживлю его.\n"
+        "🍿 **Кино:** Напиши `/movie Название фильма`, чтобы найти информацию.\n"
+        "📺 **ТВ:** Введи `/tv`, чтобы получить ссылку на твой личный плейлист каналов.",
+        parse_mode="Markdown"
     )
 
 async def send_tv_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -130,6 +121,42 @@ async def send_tv_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Скопируй её и вставь в OTT Navigator. Я регулярно обновляю этот файл!",
         parse_mode="Markdown"
     )
+
+async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = " ".join(context.args)
+    if not query:
+        await update.message.reply_text("Напиши название фильма после команды. Пример: /movie Интерстеллар")
+        return
+
+    await update.message.reply_text(f"🔎 Ищу фильм «{query}»...")
+
+    try:
+        headers = {"X-API-KEY": KINOPOISK_KEY}
+        url = f"https://api.poiskkino.dev/v1.4/movie/search?page=1&limit=1&query={query}"
+        res = requests.get(url, headers=headers, timeout=15)
+        res.raise_for_status()
+        data = res.json()
+
+        if not data.get("docs"):
+            await update.message.reply_text("😔 Ничего не нашлось. Попробуй другое название.")
+            return
+
+        movie = data["docs"][0]
+        name = movie.get("name") or movie.get("alternativeName") or "Без названия"
+        year = movie.get("year", "—")
+        rating = movie.get("rating", {}).get("kp", "—")
+        description = movie.get("description", "Описание отсутствует.")
+        poster = movie.get("poster", {}).get("url")
+
+        caption = f"🎬 **{name}** ({year})\n⭐ Рейтинг: {rating}\n\n📝 {description}"
+
+        if poster:
+            await update.message.reply_photo(photo=poster, caption=caption, parse_mode="Markdown")
+        else:
+            await update.message.reply_text(caption, parse_mode="Markdown")
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка при поиске: {e}")
 
 async def create_video_task(update: Update, prompt, image_path=None):
     headers = {"Authorization": f"Bearer {MAGIC_HOUR_KEY}", "Content-Type": "application/json"}
@@ -179,9 +206,12 @@ def main():
     threading.Thread(target=run_server, daemon=True).start()
     threading.Thread(target=update_playlist, daemon=True).start()
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tv", send_tv_link))
+    app.add_handler(CommandHandler("movie", search_movie))
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
+    
     print("Бот и IPTV сервер запущены!")
     app.run_polling()
 
