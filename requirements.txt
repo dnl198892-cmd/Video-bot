@@ -1,4 +1,4 @@
 python-telegram-bot
 requests
 magic_hour
-anime-dl-core
+yt-dlp
