@@ -1,4 +1,4 @@
 python-telegram-bot
 requests
 magic_hour
-deep-translator
+yt-dlp
