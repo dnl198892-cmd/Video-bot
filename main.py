@@ -20,6 +20,10 @@ mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY)
 ADMIN_ID = 765863387 
 ALLOWED_USERS = [ADMIN_ID] 
 
+# --- Игры ---
+snake_games = {}
+guess_games = {}
+
 # --- IPTV настройки ---
 IPTV_URLS = [
     "https://iptv-org.github.io/iptv/countries/by.m3u",
@@ -115,62 +119,82 @@ def run_server():
 def is_allowed(user_id):
     return user_id in ALLOWED_USERS
 
-# --- Умный чат через OpenRouter ---
+# --- Умный чат через OpenRouter (с перебором бесплатных моделей) ---
 async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+    text = update.message.text.strip()
     if not text:
         return
+        
+    chat_id = update.effective_chat.id
 
-    if OPENROUTER_API_KEY:
-        try:
-            url = "https://openrouter.ai/api/v1/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": "meta-llama/llama-3.1-8b-instruct:free",
-                "messages": [
-                    {"role": "system", "content": "Ты — дружелюбный Telegram-бот. Отвечай коротко (до 2-3 предложений), с юмором и по-русски."},
-                    {"role": "user", "content": text}
-                ],
-                "temperature": 0.8,
-                "max_tokens": 150
-            }
-            
-            response = await asyncio.to_thread(requests.post, url, headers=headers, json=payload, timeout=20)
-            
-            if response.status_code == 200:
-                data = response.json()
-                answer = data["choices"][0]["message"]["content"]
-                await update.message.reply_text(answer)
-                return
+    # 1. Проверяем, не играет ли пользователь в "Угадай число"
+    if chat_id in guess_games:
+        if text.isdigit():
+            user_guess = int(text)
+            target = guess_games[chat_id]
+            if user_guess == target:
+                del guess_games[chat_id]
+                await update.message.reply_text(f"🎉 Бинго! Ты угадал, это было число {target}!")
+            elif user_guess < target:
+                await update.message.reply_text("📈 Нет, мое число больше.")
             else:
-                # Если ошибка API, показываем её в чате
-                await update.message.reply_text(f"⚠️ Ошибка API: {response.status_code}\n{response.text}")
-                return
-        except Exception as e:
-            await update.message.reply_text(f"⚠️ Ошибка подключения: {e}")
+                await update.message.reply_text("📉 Нет, мое число меньше.")
             return
 
-    # Запасной вариант, если ключа вообще нет
-    if "привет" in text.lower():
-        jokes = [
-            "О, привет! Я тут фильмы ищу, а ты?",
-            "Привет. Мне тут сказали, что я бот. Врут ведь, да?",
-            "Здарова! Ты случайно не знаешь, где скачать фильм «Вышка 2»? А то я базу перебираю, а там одни супы."
+    # 2. Если это не игра, общаемся с ИИ
+    if OPENROUTER_API_KEY:
+        # Список заведомо бесплатных моделей (если одна упадет, пробуем следующую)
+        free_models = [
+            "google/gemma-2-9b-it:free",
+            "mistralai/mistral-7b-instruct:free",
+            "microsoft/phi-3-mini-128k-instruct:free"
         ]
+        
+        for model_name in free_models:
+            try:
+                url = "https://openrouter.ai/api/v1/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                payload = {
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": "Ты — дружелюбный Telegram-бот. Отвечай коротко (до 2-3 предложений), с юмором и по-русски."},
+                        {"role": "user", "content": text}
+                    ],
+                    "temperature": 0.8,
+                    "max_tokens": 150
+                }
+                
+                response = await asyncio.to_thread(requests.post, url, headers=headers, json=payload, timeout=15)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    answer = data["choices"][0]["message"]["content"]
+                    await update.message.reply_text(answer)
+                    return # Успешно ответили, выходим из функции
+                    
+            except Exception as e:
+                print(f"Модель {model_name} не сработала: {e}")
+        
+        # Если все модели выдали ошибку, бот напишет это
+        await update.message.reply_text("⚠️ Все бесплатные нейросети сейчас перегружены. Попробуй спросить чуть позже.")
+        return
+
+    # Запасной вариант (если ключа вообще нет)
+    if "привет" in text.lower():
+        jokes = ["О, привет! Я тут фильмы ищу, а ты?", "Привет. Мне тут сказали, что я бот. Врут ведь, да?"]
         await update.message.reply_text(random.choice(jokes))
     else:
-        responses = [
-            "Интересная мысль. А я вот думаю, какую игру добавить следующей.",
-            "Ха, а ты знаешь толк в разговорах! Напиши /start, чтобы увидеть все мои команды.",
-            "Согласен. Кстати, ты пробовал /snake? Я там ползаю по клеточкам."
-        ]
-        await update.message.reply_text(random.choice(responses))
+        await update.message.reply_text("Хм, интересно. Напиши /start, чтобы увидеть мои команды!")
 
-# --- Игры ---
-snake_games = {}
+# --- Функции игр ---
+async def start_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    guess_games[chat_id] = random.randint(1, 10)
+    await update.message.reply_text("🔢 Я загадал число от 1 до 10. Попробуй угадать! Просто напиши число.")
+
 def draw_snake(game):
     grid = [['⬜️' for _ in range(4)] for _ in range(4)]
     if 0 <= game['apple'][0] < 4 and 0 <= game['apple'][1] < 4: grid[game['apple'][0]][game['apple'][1]] = '🍎'
@@ -404,7 +428,7 @@ def main():
     app.add_handler(CommandHandler("recipe", search_recipe)) 
     app.add_handler(CommandHandler("game", play_game))      
     app.add_handler(CommandHandler("snake", start_snake)) 
-    app.add_handler(CommandHandler("guess", lambda u, c: u.message.reply_text(f"🔢 Я загадал число от 1 до 10. Попробуй угадать!")))  
+    app.add_handler(CommandHandler("guess", start_guess))  
     app.add_handler(CommandHandler("mario", lambda u, c: u.message.reply_text("🍄 Игра Марио временно на тех. работах. Скоро вернется!"))) 
     app.add_handler(CommandHandler("photo", text_photo_prompt))
     
