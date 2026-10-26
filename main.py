@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import magic_hour
+from deep_translator import GoogleTranslator
 
 # --- Ключи ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -108,51 +109,41 @@ def run_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# --- Кулинария (Умный словарь без лимитов) ---
+# --- Кулинария (со словарем и переводом рецепта) ---
 async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).lower()
     if not query:
-        await update.message.reply_text("Напиши название блюда или главный ингредиент. Пример: /recipe курица или /recipe картошка")
+        await update.message.reply_text("Напиши название блюда или главный ингредиент. Пример: /recipe курица")
         return
 
-    # Встроенный словарь для поиска ингредиентов
+    # Умный словарь для поиска
     FOOD_DICT = {
         "курица": "chicken", "курицы": "chicken", "курицу": "chicken", "курицей": "chicken", "цыпленок": "chicken",
-        "картошка": "potato", "картошки": "potato", "картошку": "potato", "картофель": "potato", "картофеля": "potato",
-        "мясо": "beef", "мяса": "beef", "говядина": "beef", "говядины": "beef",
+        "картошка": "potato", "картошки": "potato", "картошку": "potato", "картофель": "potato",
+        "мясо": "beef", "мяса": "beef", "говядина": "beef",
         "свинина": "pork", "свинины": "pork",
-        "суп": "soup", "супа": "soup", "бульон": "soup", "бульона": "soup",
+        "суп": "soup", "супа": "soup", "бульон": "soup",
         "паста": "pasta", "макароны": "pasta", "спагетти": "pasta",
-        "рыба": "fish", "рыбы": "fish", "лосось": "salmon", "тунец": "tuna",
+        "рыба": "fish", "рыбы": "fish", "лосось": "salmon",
         "салат": "salad", "салата": "salad",
         "торт": "cake", "пирог": "cake", "кекс": "cake",
-        "пицца": "pizza",
-        "рис": "rice",
-        "яйца": "egg", "яйцо": "egg", "яиц": "egg",
-        "сыр": "cheese",
-        "хлеб": "bread",
-        "бекон": "bacon",
-        "креветки": "shrimp", "креветка": "shrimp",
-        "грибы": "mushroom", "грибов": "mushroom",
-        "лук": "onion",
-        "чеснок": "garlic",
+        "пицца": "pizza", "рис": "rice", "яйца": "egg", "сыр": "cheese"
     }
 
-    # Ищем ключевые слова в запросе
     found_ingredient = None
     for word in query.replace(",", " ").replace(".", " ").split():
         if word in FOOD_DICT:
             found_ingredient = FOOD_DICT[word]
-            break # Берем первый найденный ингредиент
+            break
 
     if not found_ingredient:
         await update.message.reply_text(
             f"😔 Я не знаю такого ингредиента.\n"
-            f"Попробуй простые слова: курица, картошка, мясо, суп, паста, рыба, салат, торт, пицца, рис, яйца."
+            f"Попробуй: курица, картошка, мясо, суп, паста, рыба, салат, торт, пицца, рис, яйца."
         )
         return
 
-    await update.message.reply_text(f"🍳 Ищу рецепт с ингредиентом «{found_ingredient}»...")
+    await update.message.reply_text(f"🍳 Ищу рецепт и перевожу на русский...")
 
     try:
         url = f"https://www.themealdb.com/api/json/v1/1/search.php?s={found_ingredient}"
@@ -164,21 +155,34 @@ async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
             
         meal = data["meals"][0]
-        name = meal.get("strMeal", "Блюдо")
-        category = meal.get("strCategory", "")
-        area = meal.get("strArea", "")
-        instructions = meal.get("strInstructions", "Инструкции отсутствуют.")
+        name_en = meal.get("strMeal", "Блюдо")
+        category_en = meal.get("strCategory", "")
+        area_en = meal.get("strArea", "")
+        instructions_en = meal.get("strInstructions", "")
         image_url = meal.get("strMealThumb")
         
-        ingredients = []
+        # Собираем ингредиенты в текст
+        ing_text_en = ""
         for i in range(1, 21):
             ing = meal.get(f"strIngredient{i}")
             meas = meal.get(f"strMeasure{i}")
             if ing and ing.strip():
-                ingredients.append(f"• {ing} - {meas}")
-                
-        ing_text = "\n".join(ingredients)
-        caption = f"🍳 **{name}**\n🌍 Кухня: {area} | 🍽 Категория: {category}\n\n🛒 **Ингредиенты:**\n{ing_text}\n\n📝 **Рецепт (на англ.):**\n{instructions[:800]}..."
+                ing_text_en += f"• {ing} - {meas}\n"
+        
+        # ПЕРЕВОДИМ ВСЁ НА РУССКИЙ
+        try:
+            translator = GoogleTranslator(source='auto', target='ru')
+            name_ru = translator.translate(name_en)
+            ing_text_ru = translator.translate(ing_text_en)
+            instructions_ru = translator.translate(instructions_en)
+            category_ru = translator.translate(category_en)
+            area_ru = translator.translate(area_en)
+        except Exception as e:
+            print(f"Ошибка перевода: {e}")
+            name_ru, ing_text_ru, instructions_ru, category_ru, area_ru = name_en, ing_text_en, instructions_en, category_en, area_en
+
+        # Обрезаем текст, чтобы влезло в лимит Telegram
+        caption = f"🍳 **{name_ru}**\n🌍 Кухня: {area_ru} | 🍽 Категория: {category_ru}\n\n🛒 **Ингредиенты:**\n{ing_text_ru}\n\n📝 **Рецепт:**\n{instructions_ru[:800]}..."
         
         await update.message.reply_photo(photo=image_url, caption=caption, parse_mode="Markdown")
     except Exception as e:
