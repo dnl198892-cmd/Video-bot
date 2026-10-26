@@ -119,7 +119,7 @@ def run_server():
 def is_allowed(user_id):
     return user_id in ALLOWED_USERS
 
-# --- Умный чат через OpenRouter ---
+# --- Умный чат через OpenRouter (Стабильная модель) ---
 async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if not text:
@@ -153,13 +153,13 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Content-Type": "application/json"
             }
             payload = {
-                "model": "openrouter/free",
+                "model": "meta-llama/llama-3-8b-instruct:free", # Стабильная модель
                 "messages": [
-                    {"role": "system", "content": "Ты — дружелюбный Telegram-бот. Отвечай коротко (до 2-3 предложений), с юмором и строго по-русски. Если тебе пишут только смайлики, отвечай смайликами."},
+                    {"role": "system", "content": "Ты — дружелюбный Telegram-бот. Отвечай коротко (до 2-3 предложений), с юмором и строго по-русски. Не пиши 'User Safety', не используй английский язык в ответах."},
                     {"role": "user", "content": text}
                 ],
-                "temperature": 0.8,
-                "max_tokens": 200
+                "temperature": 0.7,
+                "max_tokens": 150
             }
             
             response = await asyncio.to_thread(requests.post, url, headers=headers, json=payload, timeout=20)
@@ -168,8 +168,11 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 data = response.json()
                 answer = data["choices"][0]["message"]["content"]
                 
-                if not answer or not answer.strip():
-                    answer = "Я задумался и потерял мысль... Повтори? 😅"
+                # Очистка от системных сообщений
+                answer = answer.replace("User Safety: safe", "").strip()
+                
+                if not answer:
+                    answer = "Я задумался... Давай еще раз? 😅"
                 
                 await update.message.reply_text(answer)
                 return
@@ -184,7 +187,7 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         responses = ["Хм, интересная мысль.", "Согласен. Кстати, ты пробовал /snake?", "Напиши /start, чтобы увидеть мои команды."]
         await update.message.reply_text(random.choice(responses))
 
-# --- НОВАЯ ФУНКЦИЯ ПЕРЕВОДА ---
+# --- ФУНКЦИЯ ПЕРЕВОДА ---
 async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not OPENROUTER_API_KEY:
         await update.message.reply_text("Для перевода нужен ключ OpenRouter.")
@@ -207,9 +210,9 @@ async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "openrouter/free",
+            "model": "meta-llama/llama-3-8b-instruct:free",
             "messages": [
-                {"role": "system", "content": f"Ты — профессиональный переводчик. Переведи следующий текст на язык с кодом '{lang}'. Выведи ТОЛЬКО перевод, без лишних слов, кавычек и объяснений."},
+                {"role": "system", "content": f"Ты — переводчик. Переведи текст на язык '{lang}'. Выведи ТОЛЬКО перевод."},
                 {"role": "user", "content": text_to_translate}
             ],
             "temperature": 0.3,
@@ -220,7 +223,7 @@ async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if response.status_code == 200:
             data = response.json()
-            answer = data["choices"][0]["message"]["content"]
+            answer = data["choices"][0]["message"]["content"].strip()
             await update.message.reply_text(f"📝 **Перевод:**\n{answer}", parse_mode="Markdown")
         else:
             await update.message.reply_text(f"⚠️ Ошибка API: {response.status_code}")
@@ -464,7 +467,7 @@ def main():
     app.add_handler(CommandHandler("movie", search_movie))
     app.add_handler(CommandHandler("music", search_music))
     app.add_handler(CommandHandler("recipe", search_recipe)) 
-    app.add_handler(CommandHandler("translate", translate_command)) # Новая команда
+    app.add_handler(CommandHandler("translate", translate_command))
     app.add_handler(CommandHandler("game", play_game))      
     app.add_handler(CommandHandler("snake", start_snake)) 
     app.add_handler(CommandHandler("guess", start_guess))  
