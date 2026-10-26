@@ -119,7 +119,7 @@ def run_server():
 def is_allowed(user_id):
     return user_id in ALLOWED_USERS
 
-# --- Умный чат через OpenRouter (с перебором бесплатных моделей) ---
+# --- Умный чат через OpenRouter (Роутер бесплатных моделей) ---
 async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if not text:
@@ -140,49 +140,45 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text("📉 Нет, мое число меньше.")
             return
+        else:
+            await update.message.reply_text("Пожалуйста, напиши число от 1 до 10.")
+            return
 
-    # 2. Если это не игра, общаемся с ИИ
+    # 2. Если это не игра, общаемся с ИИ через роутер OpenRouter
     if OPENROUTER_API_KEY:
-        # Список заведомо бесплатных моделей (если одна упадет, пробуем следующую)
-        free_models = [
-            "google/gemma-2-9b-it:free",
-            "mistralai/mistral-7b-instruct:free",
-            "microsoft/phi-3-mini-128k-instruct:free"
-        ]
-        
-        for model_name in free_models:
-            try:
-                url = "https://openrouter.ai/api/v1/chat/completions"
-                headers = {
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                    "Content-Type": "application/json"
-                }
-                payload = {
-                    "model": model_name,
-                    "messages": [
-                        {"role": "system", "content": "Ты — дружелюбный Telegram-бот. Отвечай коротко (до 2-3 предложений), с юмором и по-русски."},
-                        {"role": "user", "content": text}
-                    ],
-                    "temperature": 0.8,
-                    "max_tokens": 150
-                }
+        try:
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                # Используем РОУТЕР бесплатных моделей
+                "model": "openrouter/free",
+                "messages": [
+                    {"role": "system", "content": "Ты — дружелюбный Telegram-бот. Отвечай коротко (до 2-3 предложений), с юмором и по-русски."},
+                    {"role": "user", "content": text}
+                ],
+                "temperature": 0.8,
+                "max_tokens": 150
+            }
+            
+            response = await asyncio.to_thread(requests.post, url, headers=headers, json=payload, timeout=20)
+            
+            if response.status_code == 200:
+                data = response.json()
+                answer = data["choices"][0]["message"]["content"]
+                await update.message.reply_text(answer)
+                return
+            else:
+                await update.message.reply_text(f"⚠️ Ошибка API: {response.status_code}\n{response.text}")
+                return
                 
-                response = await asyncio.to_thread(requests.post, url, headers=headers, json=payload, timeout=15)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    answer = data["choices"][0]["message"]["content"]
-                    await update.message.reply_text(answer)
-                    return # Успешно ответили, выходим из функции
-                    
-            except Exception as e:
-                print(f"Модель {model_name} не сработала: {e}")
-        
-        # Если все модели выдали ошибку, бот напишет это
-        await update.message.reply_text("⚠️ Все бесплатные нейросети сейчас перегружены. Попробуй спросить чуть позже.")
-        return
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Ошибка подключения: {e}")
+            return
 
-    # Запасной вариант (если ключа вообще нет)
+    # Запасной вариант, если ключа вообще нет
     if "привет" in text.lower():
         jokes = ["О, привет! Я тут фильмы ищу, а ты?", "Привет. Мне тут сказали, что я бот. Врут ведь, да?"]
         await update.message.reply_text(random.choice(jokes))
