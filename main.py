@@ -3,10 +3,10 @@ import requests
 import threading
 import concurrent.futures
 import asyncio
-import yt_dlp
+import random
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import magic_hour
 
 # --- Ключи ---
@@ -84,7 +84,6 @@ def update_playlist():
             f.write(f"{name}\n{url}\n")
     print("Умный плейлист готов!")
 
-# --- Фейковый сервер, который больше не будет падать ---
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/my_iptv.m3u':
@@ -109,36 +108,17 @@ def run_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# --- Функция скачивания трейлера ---
-def get_trailer_url(query):
-    ydl_opts = {
-        'format': 'best[ext=mp4]',
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['mweb', 'android'], # Маскируемся
-            }
-        }
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{query} трейлер", download=False)
-            if info and info.get('entries'):
-                return info['entries'][0].get('url')
-    except Exception as e:
-        print(f"Ошибка трейлера: {e}")
-    return None
-
 # --- Telegram Бот ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Я универсальный бот.\n\n"
-        "🎬 **Видео:** Отправь фото с подписью `/photo текст`, и я оживлю его.\n"
-        "🍿 **Кино:** Напиши `/movie Название фильма`, чтобы найти информацию и трейлер.\n"
-        "🎵 **Музыка:** Напиши `/music Название песни`, и я найду трек.\n"
-        "📺 **ТВ:** Введи `/tv`, чтобы получить ссылку на твой личный плейлист каналов.",
+        "Привет! Я твой умный помощник.\n\n"
+        "🎬 **Видео:** Отправь фото с подписью `/photo текст`.\n"
+        "🍿 **Кино:** Напиши `/movie Название`.\n"
+        "🎵 **Музыка:** Напиши `/music Название`.\n"
+        "📺 **ТВ:** Введи `/tv`.\n"
+        "🍳 **Кулинария:** Введи `/recipe Название блюда` (на англ., например: /recipe Chicken).\n"
+        "🎮 **Игры:** Введи `/game`, чтобы сыграть в Камень-Ножницы-Бумага!\n"
+        "🔢 **Угадай число:** Введи `/guess`.",
         parse_mode="Markdown"
     )
 
@@ -146,14 +126,89 @@ async def send_tv_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     playlist_url = "https://video-bot-kf62.onrender.com/my_iptv.m3u"
     await update.message.reply_text(
         f"📺 Вот ссылка на твой плейлист:\n\n`{playlist_url}`\n\n"
-        f"Скопируй её и вставь в OTT Navigator. Я регулярно обновляю этот файл!",
+        f"Скопируй её и вставь в OTT Navigator.",
         parse_mode="Markdown"
     )
 
+# --- Кулинария ---
+async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = " ".join(context.args)
+    if not query:
+        await update.message.reply_text("Напиши название блюда (на английском). Пример: /recipe Pasta")
+        return
+    await update.message.reply_text(f"🍳 Ищу рецепт «{query}»...")
+    try:
+        url = f"https://www.themealdb.com/api/json/v1/1/search.php?s={query}"
+        res = requests.get(url, timeout=10)
+        data = res.json()
+        
+        if not data.get("meals"):
+            await update.message.reply_text("😔 Рецепт не найден. Попробуй на английском (например, 'Chicken' или 'Pasta').")
+            return
+            
+        meal = data["meals"][0]
+        name = meal.get("strMeal", "Блюдо")
+        category = meal.get("strCategory", "")
+        area = meal.get("strArea", "")
+        instructions = meal.get("strInstructions", "Инструкции отсутствуют.")
+        image_url = meal.get("strMealThumb")
+        
+        # Собираем ингредиенты
+        ingredients = []
+        for i in range(1, 21):
+            ing = meal.get(f"strIngredient{i}")
+            meas = meal.get(f"strMeasure{i}")
+            if ing and ing.strip():
+                ingredients.append(f"• {ing} - {meas}")
+                
+        ing_text = "\n".join(ingredients)
+        caption = f"🍳 **{name}**\n🌍 Кухня: {area} | 🍽 Категория: {category}\n\n🛒 **Ингредиенты:**\n{ing_text}\n\n📝 **Рецепт:**\n{instructions[:800]}..." # Обрезаем, чтобы влезло в лимит
+        
+        await update.message.reply_photo(photo=image_url, caption=caption, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка при поиске рецепта: {e}")
+
+# --- Игры ---
+async def play_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [
+            InlineKeyboardButton("🪨 Камень", callback_data="rock"),
+            InlineKeyboardButton("✂️ Ножницы", callback_data="scissors"),
+            InlineKeyboardButton("📄 Бумага", callback_data="paper"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Выбирай!", reply_markup=reply_markup)
+
+async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_choice = query.data
+    bot_choice = random.choice(["rock", "scissors", "paper"])
+    
+    choices = {"rock": "🪨 Камень", "scissors": "✂️ Ножницы", "paper": "📄 Бумага"}
+    
+    if user_choice == bot_choice:
+        result = "🤝 Ничья!"
+    elif (user_choice == "rock" and bot_choice == "scissors") or \
+         (user_choice == "scissors" and bot_choice == "paper") or \
+         (user_choice == "paper" and bot_choice == "rock"):
+        result = "🎉 Ты победил!"
+    else:
+        result = "😔 Я победил!"
+        
+    await query.edit_message_text(f"Ты выбрал: {choices[user_choice]}\nЯ выбрал: {choices[bot_choice]}\n\n{result}")
+
+async def guess_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    number = random.randint(1, 10)
+    await update.message.reply_text(f"🔢 Я загадал число от 1 до 10. Попробуй угадать! Напиши число.")
+
+# --- Базовые функции (Видео, Кино, Музыка) ---
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args)
     if not query:
-        await update.message.reply_text("Напиши название фильма после команды. Пример: /movie Интерстеллар")
+        await update.message.reply_text("Напиши название фильма. Пример: /movie Интерстеллар")
         return
     await update.message.reply_text(f"🔎 Ищу фильм «{query}»...")
     try:
@@ -164,7 +219,7 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = res.json()
         
         if not data.get("docs"):
-            await update.message.reply_text("😔 Ничего не нашлось. Попробуй другое название.")
+            await update.message.reply_text("😔 Ничего не нашлось.")
             return
             
         movie = data["docs"][0]
@@ -173,23 +228,8 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rating = movie.get("rating", {}).get("kp", "—")
         description = movie.get("description", "Описание отсутствует.")
         poster = movie.get("poster", {}).get("url")
-        
-        # Ищем трейлер
-        await update.message.reply_text("🎬 Ищу трейлер к фильму...")
-        trailer_url = get_trailer_url(f"{name} {year}")
-
-        if trailer_url:
-            await update.message.reply_text(f"📤 Отправляю трейлер к фильму **{name}**...", parse_mode="Markdown")
-            await update.message.reply_video(
-                video=trailer_url,
-                caption=f"🎬 {name} ({year})",
-                supports_streaming=True
-            )
-        else:
-            await update.message.reply_text("😔 Трейлер не найден.")
-            
-        # Отправляем постер (если он есть)
         caption = f"🎬 **{name}** ({year})\n⭐ Рейтинг: {rating}\n\n📝 {description}"
+        
         if poster:
             try:
                 img_res = requests.get(poster, timeout=10)
@@ -205,27 +245,23 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(caption, parse_mode="Markdown")
         else:
             await update.message.reply_text(caption, parse_mode="Markdown")
-            
-    except requests.exceptions.Timeout:
-        await update.message.reply_text("❌ Сервер Кинопоиска не отвечает. Попробуй позже.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка при поиске: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 async def search_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args)
     if not query:
-        await update.message.reply_text("Напиши название песни или исполнителя. Пример: /music Linkin Park In The End")
+        await update.message.reply_text("Напиши название песни. Пример: /music Linkin Park")
         return
 
     await update.message.reply_text(f"🎵 Ищу песню «{query}»...")
-
     try:
         url = f"https://itunes.apple.com/search?term={query}&entity=song&limit=1"
         res = requests.get(url, timeout=10)
         data = res.json()
 
         if not data.get("results"):
-            await update.message.reply_text("😔 Ничего не нашлось. Попробуй другое название.")
+            await update.message.reply_text("😔 Ничего не нашлось.")
             return
 
         track = data["results"][0]
@@ -246,10 +282,9 @@ async def search_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
         else:
-            await update.message.reply_text("Нашел песню, но нет отрывка для прослушивания.")
-
+            await update.message.reply_text("Нашел песню, но нет отрывка.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка при поиске: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 async def create_video_task(update: Update, prompt, image_path=None):
     headers = {"Authorization": f"Bearer {MAGIC_HOUR_KEY}", "Content-Type": "application/json"}
@@ -307,6 +342,10 @@ def main():
     app.add_handler(CommandHandler("tv", send_tv_link))
     app.add_handler(CommandHandler("movie", search_movie))
     app.add_handler(CommandHandler("music", search_music))
+    app.add_handler(CommandHandler("recipe", search_recipe)) # Новая
+    app.add_handler(CommandHandler("game", play_game))      # Новая
+    app.add_handler(CommandHandler("guess", guess_number))  # Новая
+    app.add_handler(CallbackQueryHandler(game_callback))   # Кнопки для игры
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
     app.add_error_handler(error_handler)
     
