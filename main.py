@@ -17,8 +17,10 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
 mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY)
 
+# --- Настройки доступа ---
 ADMIN_ID = 765863387 
-ALLOWED_USERS = [ADMIN_ID] 
+# Здесь твой ID и ID Алёны
+ALLOWED_USERS = [765863387, 1331828023] 
 
 # --- Игры ---
 snake_games = {}
@@ -119,7 +121,7 @@ def run_server():
 def is_allowed(user_id):
     return user_id in ALLOWED_USERS
 
-# --- Умный чат через OpenRouter (Честные ошибки) ---
+# --- Умный чат через OpenRouter ---
 async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if not text:
@@ -143,12 +145,10 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Пожалуйста, напиши число от 1 до 10.")
             return
 
-    # Если ключа нет вообще
     if not OPENROUTER_API_KEY:
         await update.message.reply_text("⚠️ В настройках Render не добавлен ключ `OPENROUTER_API_KEY`.")
         return
 
-    # Общение с ИИ
     try:
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
@@ -170,21 +170,16 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if response.status_code == 200:
             data = response.json()
             answer = data["choices"][0]["message"]["content"]
-            
-            # Убираем системный мусор, если он проскочит
             answer = answer.replace("User Safety: safe", "").strip()
             
             if not answer:
                 answer = "Я задумался... Давай еще раз? 😅"
             
             await update.message.reply_text(answer)
-            
         else:
-            # Если OpenRouter выдал ошибку (401, 429 и т.д.)
             await update.message.reply_text(f"⚠️ Нейросеть выдала ошибку: `{response.status_code}`. Попробуй позже.", parse_mode="Markdown")
             
     except Exception as e:
-        # Если упал интернет или таймаут
         await update.message.reply_text(f"⚠️ Ошибка подключения к ИИ: `{e}`", parse_mode="Markdown")
 
 # --- ФУНКЦИЯ ПЕРЕВОДА ---
