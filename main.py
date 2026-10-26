@@ -8,7 +8,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import magic_hour
-from spellchecker import SpellChecker
 
 # --- Ключи ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -16,8 +15,6 @@ MAGIC_HOUR_KEY = os.getenv("MAGIC_HOUR_KEY")
 KINOPOISK_KEY = os.getenv("KINOPOISK_KEY")
 MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
 mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY)
-
-spell = SpellChecker(language='en')
 
 # --- IPTV настройки ---
 IPTV_URLS = [
@@ -111,62 +108,44 @@ def run_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# --- Функция перевода через Google (без ключей и лимитов) ---
-def translate_text(text):
-    try:
-        url = "https://translate.googleapis.com/translate_a/single"
-        params = {
-            "client": "gtx",
-            "sl": "ru",
-            "tl": "en",
-            "dt": "t",
-            "q": text
-        }
-        res = requests.get(url, params=params, timeout=10)
-        res.raise_for_status()
-        data = res.json()
-        # Извлекаем переведенный текст из глубокого массива
-        translated = "".join([item[0] for item in data[0]])
-        return translated.lower()
-    except Exception as e:
-        print(f"Ошибка перевода: {e}")
-        return text.lower() # Если ошибка, возвращаем оригинал
-
 # --- Кулинария ---
 async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args)
     if not query:
-        await update.message.reply_text("Напиши название блюда. Пример: /recipe курица")
+        await update.message.reply_text("Напиши название блюда или главный ингредиент. Пример: /recipe курица или /recipe картошка")
         return
         
     await update.message.reply_text(f"🍳 Ищу рецепт «{query}»...")
 
     try:
         # 1. Переводим через Google
-        english_query = translate_text(query)
+        translate_url = "https://translate.googleapis.com/translate_a/single"
+        params = {"client": "gtx", "sl": "ru", "tl": "en", "dt": "t", "q": query}
+        translate_res = requests.get(translate_url, params=params, timeout=10)
+        data = translate_res.json()
+        english_query = "".join([item[0] for item in data[0]]).lower()
         
-        # 2. Исправляем опечатки
-        words = english_query.split()
-        corrected_words = []
-        for word in words:
-            if word not in spell:
-                corrected = spell.correction(word)
-                corrected_words.append(corrected if corrected else word)
-            else:
-                corrected_words.append(word)
-                
-        final_query = " ".join(corrected_words)
-        print(f"Перевод: {query} -> {english_query} -> {final_query}")
+        # Чистим от странных символов
+        english_query = english_query.replace("і", "i").strip()
+        print(f"Перевод: {query} -> {english_query}")
 
-        # 3. Ищем рецепт
-        url = f"https://www.themealdb.com/api/json/v1/1/search.php?s={final_query}"
+        # 2. Ищем рецепт по всему переводу
+        url = f"https://www.themealdb.com/api/json/v1/1/search.php?s={english_query}"
         res = requests.get(url, timeout=10)
         data = res.json()
         
+        # Если не нашли по всей фразе, пробуем найти по последнему слову (главному ингредиенту)
+        if not data.get("meals") and len(english_query.split()) > 1:
+            main_ingredient = english_query.split()[-1] # Берем последнее слово
+            url = f"https://www.themealdb.com/api/json/v1/1/search.php?s={main_ingredient}"
+            res = requests.get(url, timeout=10)
+            data = res.json()
+            english_query = main_ingredient
+        
         if not data.get("meals"):
             await update.message.reply_text(
-                f"😔 Рецепт по запросу «{final_query}» не найден.\n"
-                f"Попробуй простые слова: Chicken, Pasta, Beef, Soup, Cake."
+                f"😔 Рецепт по запросу «{english_query}» не найден.\n"
+                f"Совет: пиши только главный ингредиент или простое название блюда (например: курица, картошка, суп, паста)."
             )
             return
             
@@ -220,7 +199,6 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(f"Ты выбрал: {choices[user_choice]}\nЯ выбрал: {choices[bot_choice]}\n\n{result}")
 
 async def guess_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    number = random.randint(1, 10)
     await update.message.reply_text(f"🔢 Я загадал число от 1 до 10. Попробуй угадать! Напиши число.")
 
 # --- Базовые функции (Видео, Кино, Музыка) ---
@@ -331,10 +309,15 @@ async def create_video_task(update: Update, prompt, image_path=None):
         await update.message.reply_text(f"Ошибка: {e}")
 
 async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Получил фото...")
+    # Если пользователь отправил фото с текстом или без
     caption = update.message.caption or ""
     prompt = caption.replace("/photo", "").strip()
-    if not prompt: return
+    
+    if not prompt:
+        await update.message.reply_text("⚠️ Ты забыл написать описание к фото! Напиши в подписи к фото, что должно произойти (например: 'девушка улыбается').")
+        return
+        
+    await update.message.reply_text("⏳ Получил фото, начинаю обработку...")
     photo_file = await update.message.photo[-1].get_file()
     temp_image_path = "temp_image.jpg"
     await photo_file.download_to_drive(custom_path=temp_image_path)
@@ -342,13 +325,16 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.remove(temp_image_path)
     await create_video_task(update, prompt, image_path=uploaded_file_path)
 
+async def text_photo_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Чтобы оживить фото, прикрепи его к сообщению и в подписи (в поле для текста) напиши, что должно произойти.")
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     print(f"Ошибка: {context.error}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привет! Я твой умный помощник.\n\n"
-        "🎬 **Видео:** Отправь фото с подписью `/photo текст`.\n"
+        "🎬 **Видео:** Отправь фото с подписью (что должно произойти).\n"
         "🍿 **Кино:** Напиши `/movie Название`.\n"
         "🎵 **Музыка:** Напиши `/music Название`.\n"
         "📺 **ТВ:** Введи `/tv`.\n"
@@ -377,6 +363,7 @@ def main():
     app.add_handler(CommandHandler("recipe", search_recipe)) 
     app.add_handler(CommandHandler("game", play_game))      
     app.add_handler(CommandHandler("guess", guess_number))  
+    app.add_handler(CommandHandler("photo", text_photo_prompt)) # Если нажали /photo без фото
     app.add_handler(CallbackQueryHandler(game_callback))   
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
     app.add_error_handler(error_handler)
