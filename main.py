@@ -13,7 +13,7 @@ import magic_hour
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 MAGIC_HOUR_KEY = os.getenv("MAGIC_HOUR_KEY")
 KINOPOISK_KEY = os.getenv("KINOPOISK_KEY")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") # НОВЫЙ КЛЮЧ
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
 mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY)
 
@@ -129,8 +129,7 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Content-Type": "application/json"
             }
             payload = {
-                # Используем бесплатную модель (суффикс :free)
-                "model": "deepseek/deepseek-r1:free", 
+                "model": "meta-llama/llama-3.1-8b-instruct:free",
                 "messages": [
                     {"role": "system", "content": "Ты — дружелюбный Telegram-бот. Отвечай коротко (до 2-3 предложений), с юмором и по-русски."},
                     {"role": "user", "content": text}
@@ -147,11 +146,14 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(answer)
                 return
             else:
-                print(f"Ошибка OpenRouter: {response.text}")
+                # Если ошибка API, показываем её в чате
+                await update.message.reply_text(f"⚠️ Ошибка API: {response.status_code}\n{response.text}")
+                return
         except Exception as e:
-            print(f"Ошибка OpenRouter: {e}")
+            await update.message.reply_text(f"⚠️ Ошибка подключения: {e}")
+            return
 
-    # Запасной вариант (если ИИ недоступен)
+    # Запасной вариант, если ключа вообще нет
     if "привет" in text.lower():
         jokes = [
             "О, привет! Я тут фильмы ищу, а ты?",
@@ -167,7 +169,7 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await update.message.reply_text(random.choice(responses))
 
-# --- Игры (без изменений) ---
+# --- Игры ---
 snake_games = {}
 def draw_snake(game):
     grid = [['⬜️' for _ in range(4)] for _ in range(4)]
@@ -247,7 +249,7 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: result = "😔 Я победил!"
     await query.edit_message_text(f"Ты выбрал: {choices[user_choice]}\nЯ выбрал: {choices[bot_choice]}\n\n{result}")
 
-# --- Кулинария, Кино, Музыка, Видео (без изменений) ---
+# --- Кулинария, Кино, Музыка, Видео ---
 async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).lower()
     if not query:
