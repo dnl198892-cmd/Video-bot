@@ -119,7 +119,7 @@ def run_server():
 def is_allowed(user_id):
     return user_id in ALLOWED_USERS
 
-# --- Умный чат через OpenRouter (Роутер бесплатных моделей) ---
+# --- Умный чат через OpenRouter ---
 async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if not text:
@@ -127,7 +127,7 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     chat_id = update.effective_chat.id
 
-    # 1. Проверяем, не играет ли пользователь в "Угадай число"
+    # 1. Проверяем игру "Угадай число"
     if chat_id in guess_games:
         if text.isdigit():
             user_guess = int(text)
@@ -144,7 +144,7 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Пожалуйста, напиши число от 1 до 10.")
             return
 
-    # 2. Если это не игра, общаемся с ИИ через роутер OpenRouter
+    # 2. Общение с ИИ
     if OPENROUTER_API_KEY:
         try:
             url = "https://openrouter.ai/api/v1/chat/completions"
@@ -153,32 +153,32 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Content-Type": "application/json"
             }
             payload = {
-                # Используем РОУТЕР бесплатных моделей
-                "model": "openrouter/free",
+                "model": "google/gemma-2-9b-it:free", # Более простая модель без "мыслей"
                 "messages": [
-                    {"role": "system", "content": "Ты — дружелюбный Telegram-бот. Отвечай коротко (до 2-3 предложений), с юмором и по-русски."},
+                    {"role": "system", "content": "Ты — дружелюбный Telegram-бот. Отвечай коротко (до 2-3 предложений), с юмором и строго по-русски. Если тебе пишут только смайлики, отвечай смайликами."},
                     {"role": "user", "content": text}
                 ],
                 "temperature": 0.8,
                 "max_tokens": 150
             }
             
-            response = await asyncio.to_thread(requests.post, url, headers=headers, json=payload, timeout=20)
+            response = await asyncio.to_thread(requests.post, url, headers=headers, json=payload, timeout=15)
             
             if response.status_code == 200:
                 data = response.json()
                 answer = data["choices"][0]["message"]["content"]
+                
+                # Проверка на пустой ответ (чтобы не было ошибки Message text is empty)
+                if not answer or not answer.strip():
+                    answer = "Я задумался и потерял мысль... Повтори? 😅"
+                
                 await update.message.reply_text(answer)
-                return
-            else:
-                await update.message.reply_text(f"⚠️ Ошибка API: {response.status_code}\n{response.text}")
                 return
                 
         except Exception as e:
-            await update.message.reply_text(f"⚠️ Ошибка подключения: {e}")
-            return
+            print(f"Ошибка OpenRouter: {e}")
 
-    # Запасной вариант, если ключа вообще нет
+    # Запасной вариант (если ключа нет или ИИ упал)
     if "привет" in text.lower():
         jokes = ["О, привет! Я тут фильмы ищу, а ты?", "Привет. Мне тут сказали, что я бот. Врут ведь, да?"]
         await update.message.reply_text(random.choice(jokes))
