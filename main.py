@@ -8,7 +8,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import magic_hour
-from deep_translator import GoogleTranslator
 
 # --- Ключи ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -109,14 +108,28 @@ def run_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# --- Кулинария (со словарем и переводом рецепта) ---
+# --- Функция перевода через Lingva (бесплатно, без ключей) ---
+def translate_text(text):
+    if not text or not text.strip():
+        return text
+    try:
+        # Используем публичный API Lingva
+        safe_text = requests.utils.quote(text[:1500]) # Ограничиваем размер текста
+        url = f"https://lingva.ml/api/v1/en/ru/{safe_text}"
+        res = requests.get(url, timeout=10)
+        if res.status_code == 200:
+            return res.json().get("translation", text)
+    except Exception as e:
+        print(f"Ошибка перевода Lingva: {e}")
+    return text # Если не удалось перевести, возвращаем оригинал
+
+# --- Кулинария ---
 async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).lower()
     if not query:
         await update.message.reply_text("Напиши название блюда или главный ингредиент. Пример: /recipe курица")
         return
 
-    # Умный словарь для поиска
     FOOD_DICT = {
         "курица": "chicken", "курицы": "chicken", "курицу": "chicken", "курицей": "chicken", "цыпленок": "chicken",
         "картошка": "potato", "картошки": "potato", "картошку": "potato", "картофель": "potato",
@@ -161,7 +174,6 @@ async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         instructions_en = meal.get("strInstructions", "")
         image_url = meal.get("strMealThumb")
         
-        # Собираем ингредиенты в текст
         ing_text_en = ""
         for i in range(1, 21):
             ing = meal.get(f"strIngredient{i}")
@@ -169,19 +181,13 @@ async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if ing and ing.strip():
                 ing_text_en += f"• {ing} - {meas}\n"
         
-        # ПЕРЕВОДИМ ВСЁ НА РУССКИЙ
-        try:
-            translator = GoogleTranslator(source='auto', target='ru')
-            name_ru = translator.translate(name_en)
-            ing_text_ru = translator.translate(ing_text_en)
-            instructions_ru = translator.translate(instructions_en)
-            category_ru = translator.translate(category_en)
-            area_ru = translator.translate(area_en)
-        except Exception as e:
-            print(f"Ошибка перевода: {e}")
-            name_ru, ing_text_ru, instructions_ru, category_ru, area_ru = name_en, ing_text_en, instructions_en, category_en, area_en
+        # Переводим
+        name_ru = translate_text(name_en)
+        ing_text_ru = translate_text(ing_text_en)
+        instructions_ru = translate_text(instructions_en)
+        category_ru = translate_text(category_en)
+        area_ru = translate_text(area_en)
 
-        # Обрезаем текст, чтобы влезло в лимит Telegram
         caption = f"🍳 **{name_ru}**\n🌍 Кухня: {area_ru} | 🍽 Категория: {category_ru}\n\n🛒 **Ингредиенты:**\n{ing_text_ru}\n\n📝 **Рецепт:**\n{instructions_ru[:800]}..."
         
         await update.message.reply_photo(photo=image_url, caption=caption, parse_mode="Markdown")
