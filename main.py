@@ -13,6 +13,7 @@ import magic_hour
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 MAGIC_HOUR_KEY = os.getenv("MAGIC_HOUR_KEY")
 KINOPOISK_KEY = os.getenv("KINOPOISK_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") # НОВЫЙ КЛЮЧ
 MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
 mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY)
 
@@ -114,37 +115,67 @@ def run_server():
 def is_allowed(user_id):
     return user_id in ALLOWED_USERS
 
-# --- Юмор и общение ---
+# --- Умный чат через OpenRouter ---
 async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower()
-    
-    if "привет" in text or "здравствуй" in text or "хай" in text:
+    text = update.message.text
+    if not text:
+        return
+
+    if OPENROUTER_API_KEY:
+        try:
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                # Используем бесплатную модель (суффикс :free)
+                "model": "deepseek/deepseek-r1:free", 
+                "messages": [
+                    {"role": "system", "content": "Ты — дружелюбный Telegram-бот. Отвечай коротко (до 2-3 предложений), с юмором и по-русски."},
+                    {"role": "user", "content": text}
+                ],
+                "temperature": 0.8,
+                "max_tokens": 150
+            }
+            
+            response = await asyncio.to_thread(requests.post, url, headers=headers, json=payload, timeout=20)
+            
+            if response.status_code == 200:
+                data = response.json()
+                answer = data["choices"][0]["message"]["content"]
+                await update.message.reply_text(answer)
+                return
+            else:
+                print(f"Ошибка OpenRouter: {response.text}")
+        except Exception as e:
+            print(f"Ошибка OpenRouter: {e}")
+
+    # Запасной вариант (если ИИ недоступен)
+    if "привет" in text.lower():
         jokes = [
             "О, привет! Я тут фильмы ищу, а ты?",
-            "Приветствую. Ты знал, что я умею делать видео из фото? Нажми /start, если хочешь узнать больше.",
-            "Здарова! Ты случайно не знаешь, где скачать фильм «Вышка 2»? А то я базу перебираю, а там одни супы.",
             "Привет. Мне тут сказали, что я бот. Врут ведь, да?",
-            "Привет! Пока ты здороваешься, я уже 500 каналов проверил. А ты?"
+            "Здарова! Ты случайно не знаешь, где скачать фильм «Вышка 2»? А то я базу перебираю, а там одни супы."
         ]
         await update.message.reply_text(random.choice(jokes))
+    else:
+        responses = [
+            "Интересная мысль. А я вот думаю, какую игру добавить следующей.",
+            "Ха, а ты знаешь толк в разговорах! Напиши /start, чтобы увидеть все мои команды.",
+            "Согласен. Кстати, ты пробовал /snake? Я там ползаю по клеточкам."
+        ]
+        await update.message.reply_text(random.choice(responses))
 
-# --- Игры ---
-# Простая змейка (сетка 4x4)
+# --- Игры (без изменений) ---
 snake_games = {}
-
 def draw_snake(game):
     grid = [['⬜️' for _ in range(4)] for _ in range(4)]
-    # Яблоко
-    if 0 <= game['apple'][0] < 4 and 0 <= game['apple'][1] < 4:
-        grid[game['apple'][0]][game['apple'][1]] = '🍎'
-    # Змейка
+    if 0 <= game['apple'][0] < 4 and 0 <= game['apple'][1] < 4: grid[game['apple'][0]][game['apple'][1]] = '🍎'
     for segment in game['snake']:
-        if 0 <= segment[0] < 4 and 0 <= segment[1] < 4:
-            grid[segment[0]][segment[1]] = '🟩'
-    
+        if 0 <= segment[0] < 4 and 0 <= segment[1] < 4: grid[segment[0]][segment[1]] = '🟩'
     text = "🐍 **Змейка**\n\n"
-    for row in grid:
-        text += "".join(row) + "\n"
+    for row in grid: text += "".join(row) + "\n"
     text += f"\nСчёт: {game['score']}"
     return text
 
@@ -158,47 +189,33 @@ def get_snake_keyboard():
 
 async def start_snake(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    snake_games[chat_id] = {
-        'snake': [(0, 0)],
-        'direction': 'right',
-        'apple': (2, 2),
-        'score': 0,
-        'alive': True
-    }
-    game = snake_games[chat_id]
-    await update.message.reply_text(draw_snake(game), reply_markup=get_snake_keyboard(), parse_mode="Markdown")
+    snake_games[chat_id] = {'snake': [(0, 0)], 'direction': 'right', 'apple': (2, 2), 'score': 0, 'alive': True}
+    await update.message.reply_text(draw_snake(snake_games[chat_id]), reply_markup=get_snake_keyboard(), parse_mode="Markdown")
 
 async def snake_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     chat_id = update.effective_chat.id
-    if chat_id not in snake_games:
-        return
-
+    if chat_id not in snake_games: return
     game = snake_games[chat_id]
     if not game['alive']:
         await query.edit_message_text("🐍 Игра окончена! Напиши /snake, чтобы начать заново.")
         return
-
     head = list(game['snake'][0])
     action = query.data
-
     if action == "snake_up": head[0] -= 1
     elif action == "snake_down": head[0] += 1
     elif action == "snake_left": head[1] -= 1
     elif action == "snake_right": head[1] += 1
 
-    # Проверка на выход за границы
     if head[0] < 0 or head[0] >= 4 or head[1] < 0 or head[1] >= 4:
         game['alive'] = False
         await query.edit_message_text(f"💥 Ты врезался в стену! Игра окончена.\nСчёт: {game['score']}", reply_markup=None)
         return
 
-    # Проверка на поедание яблока
     if tuple(head) == game['apple']:
         game['score'] += 1
         game['snake'].insert(0, tuple(head))
-        # Новое яблоко
         while True:
             new_apple = (random.randint(0, 3), random.randint(0, 3))
             if new_apple not in game['snake']:
@@ -208,20 +225,15 @@ async def snake_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         game['snake'].insert(0, tuple(head))
         game['snake'].pop()
 
-    # Проверка на столкновение с собой
     if game['snake'][0] in game['snake'][1:]:
         game['alive'] = False
         await query.edit_message_text(f"💥 Ты укусил сам себя! Игра окончена.\nСчёт: {game['score']}", reply_markup=None)
         return
-
     await query.edit_message_text(draw_snake(game), reply_markup=get_snake_keyboard(), parse_mode="Markdown")
 
 async def play_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("🪨 Камень", callback_data="rock"), InlineKeyboardButton("✂️ Ножницы", callback_data="scissors"), InlineKeyboardButton("📄 Бумага", callback_data="paper")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выбирай!", reply_markup=reply_markup)
+    keyboard = [[InlineKeyboardButton("🪨 Камень", callback_data="rock"), InlineKeyboardButton("✂️ Ножницы", callback_data="scissors"), InlineKeyboardButton("📄 Бумага", callback_data="paper")]]
+    await update.message.reply_text("Выбирай!", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -235,7 +247,7 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: result = "😔 Я победил!"
     await query.edit_message_text(f"Ты выбрал: {choices[user_choice]}\nЯ выбрал: {choices[bot_choice]}\n\n{result}")
 
-# --- Кулинария ---
+# --- Кулинария, Кино, Музыка, Видео (без изменений) ---
 async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).lower()
     if not query:
@@ -260,7 +272,6 @@ async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# --- Базовые функции ---
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args)
     if not query:
@@ -390,16 +401,16 @@ def main():
     app.add_handler(CommandHandler("music", search_music))
     app.add_handler(CommandHandler("recipe", search_recipe)) 
     app.add_handler(CommandHandler("game", play_game))      
-    app.add_handler(CommandHandler("snake", start_snake)) # Новая игра
+    app.add_handler(CommandHandler("snake", start_snake)) 
     app.add_handler(CommandHandler("guess", lambda u, c: u.message.reply_text(f"🔢 Я загадал число от 1 до 10. Попробуй угадать!")))  
     app.add_handler(CommandHandler("mario", lambda u, c: u.message.reply_text("🍄 Игра Марио временно на тех. работах. Скоро вернется!"))) 
     app.add_handler(CommandHandler("photo", text_photo_prompt))
     
     app.add_handler(CallbackQueryHandler(game_callback, pattern="^(rock|scissors|paper)$"))
-    app.add_handler(CallbackQueryHandler(snake_callback, pattern="^snake_")) # Кнопки змейки
+    app.add_handler(CallbackQueryHandler(snake_callback, pattern="^snake_")) 
     
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler)) # Юмор
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler)) 
     app.add_error_handler(error_handler)
     
     print("Бот и IPTV сервер запущены!")
