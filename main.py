@@ -17,7 +17,6 @@ KINOPOISK_KEY = os.getenv("KINOPOISK_KEY")
 MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
 mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY)
 
-# Инициализируем корректор опечаток
 spell = SpellChecker(language='en')
 
 # --- IPTV настройки ---
@@ -112,7 +111,28 @@ def run_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# --- Кулинария (с исправлением опечаток) ---
+# --- Функция перевода через Google (без ключей и лимитов) ---
+def translate_text(text):
+    try:
+        url = "https://translate.googleapis.com/translate_a/single"
+        params = {
+            "client": "gtx",
+            "sl": "ru",
+            "tl": "en",
+            "dt": "t",
+            "q": text
+        }
+        res = requests.get(url, params=params, timeout=10)
+        res.raise_for_status()
+        data = res.json()
+        # Извлекаем переведенный текст из глубокого массива
+        translated = "".join([item[0] for item in data[0]])
+        return translated.lower()
+    except Exception as e:
+        print(f"Ошибка перевода: {e}")
+        return text.lower() # Если ошибка, возвращаем оригинал
+
+# --- Кулинария ---
 async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args)
     if not query:
@@ -122,29 +142,21 @@ async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🍳 Ищу рецепт «{query}»...")
 
     try:
-        # 1. Переводим запрос на английский
-        translate_url = f"https://api.mymemory.translated.net/get?q={query}&langpair=ru|en"
-        translate_res = requests.get(translate_url, timeout=10)
-        translated_data = translate_res.json()
-        english_query = translated_data.get("responseData", {}).get("translatedText", query).lower()
+        # 1. Переводим через Google
+        english_query = translate_text(query)
         
-        # 2. Исправляем опечатки (например, chiken -> chicken)
-        # Разбиваем на слова и ищем самое близкое правильное
+        # 2. Исправляем опечатки
         words = english_query.split()
         corrected_words = []
         for word in words:
-            # Если слова нет в словаре, пытаемся найти правильный вариант
             if word not in spell:
                 corrected = spell.correction(word)
-                if corrected:
-                    corrected_words.append(corrected)
-                else:
-                    corrected_words.append(word)
+                corrected_words.append(corrected if corrected else word)
             else:
                 corrected_words.append(word)
                 
         final_query = " ".join(corrected_words)
-        print(f"Перевод и коррекция: {query} -> {english_query} -> {final_query}")
+        print(f"Перевод: {query} -> {english_query} -> {final_query}")
 
         # 3. Ищем рецепт
         url = f"https://www.themealdb.com/api/json/v1/1/search.php?s={final_query}"
@@ -194,12 +206,9 @@ async def play_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     user_choice = query.data
     bot_choice = random.choice(["rock", "scissors", "paper"])
-    
     choices = {"rock": "🪨 Камень", "scissors": "✂️ Ножницы", "paper": "📄 Бумага"}
-    
     if user_choice == bot_choice:
         result = "🤝 Ничья!"
     elif (user_choice == "rock" and bot_choice == "scissors") or \
@@ -208,7 +217,6 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = "🎉 Ты победил!"
     else:
         result = "😔 Я победил!"
-        
     await query.edit_message_text(f"Ты выбрал: {choices[user_choice]}\nЯ выбрал: {choices[bot_choice]}\n\n{result}")
 
 async def guess_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -247,10 +255,8 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 img_res.raise_for_status()
                 with open("poster_temp.jpg", "wb") as f:
                     f.write(img_res.content)
-                
                 with open("poster_temp.jpg", "rb") as f:
                     await update.message.reply_photo(photo=f, caption=caption, parse_mode="Markdown")
-                
                 os.remove("poster_temp.jpg")
             except Exception:
                 await update.message.reply_text(caption, parse_mode="Markdown")
@@ -264,25 +270,20 @@ async def search_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not query:
         await update.message.reply_text("Напиши название песни. Пример: /music Linkin Park")
         return
-
     await update.message.reply_text(f"🎵 Ищу песню «{query}»...")
     try:
         url = f"https://itunes.apple.com/search?term={query}&entity=song&limit=1"
         res = requests.get(url, timeout=10)
         data = res.json()
-
         if not data.get("results"):
             await update.message.reply_text("😔 Ничего не нашлось.")
             return
-
         track = data["results"][0]
         track_name = track.get("trackName", "Неизвестный трек")
         artist_name = track.get("artistName", "Неизвестный исполнитель")
         preview_url = track.get("previewUrl")
         artwork_url = track.get("artworkUrl100", "").replace("100x100", "600x600")
-
         caption = f"🎵 **{artist_name} — {track_name}**\n\n"
-        
         if preview_url:
             await update.message.reply_audio(
                 audio=preview_url,
@@ -344,6 +345,26 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     print(f"Ошибка: {context.error}")
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Привет! Я твой умный помощник.\n\n"
+        "🎬 **Видео:** Отправь фото с подписью `/photo текст`.\n"
+        "🍿 **Кино:** Напиши `/movie Название`.\n"
+        "🎵 **Музыка:** Напиши `/music Название`.\n"
+        "📺 **ТВ:** Введи `/tv`.\n"
+        "🍳 **Кулинария:** Введи `/recipe Название блюда` (на русском).\n"
+        "🎮 **Игры:** Введи `/game` или `/guess`.",
+        parse_mode="Markdown"
+    )
+
+async def send_tv_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    playlist_url = "https://video-bot-kf62.onrender.com/my_iptv.m3u"
+    await update.message.reply_text(
+        f"📺 Вот ссылка на твой плейлист:\n\n`{playlist_url}`\n\n"
+        f"Скопируй её и вставь в OTT Navigator.",
+        parse_mode="Markdown"
+    )
+
 def main():
     threading.Thread(target=run_server, daemon=True).start()
     threading.Thread(target=update_playlist, daemon=True).start()
@@ -362,27 +383,6 @@ def main():
     
     print("Бот и IPTV сервер запущены!")
     app.run_polling()
-
-# --- Функции start и send_tv_link (объявляем их до main, чтобы не было ошибок) ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Привет! Я твой умный помощник.\n\n"
-        "🎬 **Видео:** Отправь фото с подписью `/photo текст`.\n"
-        "🍿 **Кино:** Напиши `/movie Название`.\n"
-        "🎵 **Музыка:** Напиши `/music Название`.\n"
-        "📺 **ТВ:** Введи `/tv`.\n"
-        "🍳 **Кулинария:** Введи `/recipe Название блюда` (на русском).\n"
-        "🎮 **Игры:** Введи `/game` (Камень-Ножницы-Бумага) или `/guess` (Угадай число).",
-        parse_mode="Markdown"
-    )
-
-async def send_tv_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    playlist_url = "https://video-bot-kf62.onrender.com/my_iptv.m3u"
-    await update.message.reply_text(
-        f"📺 Вот ссылка на твой плейлист:\n\n`{playlist_url}`\n\n"
-        f"Скопируй её и вставь в OTT Navigator.",
-        parse_mode="Markdown"
-    )
 
 if __name__ == "__main__":
     main()
