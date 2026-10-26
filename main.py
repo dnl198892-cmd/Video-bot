@@ -108,20 +108,19 @@ def run_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# --- Функция перевода через Lingva (бесплатно, без ключей) ---
+# --- Функция перевода (синхронная, но мы будем вызывать её в отдельном потоке) ---
 def translate_text(text):
     if not text or not text.strip():
         return text
     try:
-        # Используем публичный API Lingva
-        safe_text = requests.utils.quote(text[:1500]) # Ограничиваем размер текста
+        safe_text = requests.utils.quote(text[:1500])
         url = f"https://lingva.ml/api/v1/en/ru/{safe_text}"
         res = requests.get(url, timeout=10)
         if res.status_code == 200:
             return res.json().get("translation", text)
     except Exception as e:
-        print(f"Ошибка перевода Lingva: {e}")
-    return text # Если не удалось перевести, возвращаем оригинал
+        print(f"Ошибка перевода: {e}")
+    return text
 
 # --- Кулинария ---
 async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -135,7 +134,7 @@ async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "картошка": "potato", "картошки": "potato", "картошку": "potato", "картофель": "potato",
         "мясо": "beef", "мяса": "beef", "говядина": "beef",
         "свинина": "pork", "свинины": "pork",
-        "суп": "soup", "супа": "soup", "бульон": "soup",
+        "суп": "soup", "супа": "soup", "бульон": "soup", "фасоль": "beans", "фасолевый": "beans",
         "паста": "pasta", "макароны": "pasta", "спагетти": "pasta",
         "рыба": "fish", "рыбы": "fish", "лосось": "salmon",
         "салат": "salad", "салата": "salad",
@@ -152,7 +151,7 @@ async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not found_ingredient:
         await update.message.reply_text(
             f"😔 Я не знаю такого ингредиента.\n"
-            f"Попробуй: курица, картошка, мясо, суп, паста, рыба, салат, торт, пицца, рис, яйца."
+            f"Попробуй: курица, картошка, мясо, суп, фасоль, паста, рыба."
         )
         return
 
@@ -181,12 +180,12 @@ async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if ing and ing.strip():
                 ing_text_en += f"• {ing} - {meas}\n"
         
-        # Переводим
-        name_ru = translate_text(name_en)
-        ing_text_ru = translate_text(ing_text_en)
-        instructions_ru = translate_text(instructions_en)
-        category_ru = translate_text(category_en)
-        area_ru = translate_text(area_en)
+        # ВАЖНО: Переводим в отдельных потоках, чтобы не блокировать бота!
+        name_ru = await asyncio.to_thread(translate_text, name_en)
+        ing_text_ru = await asyncio.to_thread(translate_text, ing_text_en)
+        instructions_ru = await asyncio.to_thread(translate_text, instructions_en)
+        category_ru = await asyncio.to_thread(translate_text, category_en)
+        area_ru = await asyncio.to_thread(translate_text, area_en)
 
         caption = f"🍳 **{name_ru}**\n🌍 Кухня: {area_ru} | 🍽 Категория: {category_ru}\n\n🛒 **Ингредиенты:**\n{ing_text_ru}\n\n📝 **Рецепт:**\n{instructions_ru[:800]}..."
         
