@@ -108,45 +108,59 @@ def run_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# --- Кулинария ---
+# --- Кулинария (Умный словарь без лимитов) ---
 async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = " ".join(context.args)
+    query = " ".join(context.args).lower()
     if not query:
         await update.message.reply_text("Напиши название блюда или главный ингредиент. Пример: /recipe курица или /recipe картошка")
         return
-        
-    await update.message.reply_text(f"🍳 Ищу рецепт «{query}»...")
+
+    # Встроенный словарь для поиска ингредиентов
+    FOOD_DICT = {
+        "курица": "chicken", "курицы": "chicken", "курицу": "chicken", "курицей": "chicken", "цыпленок": "chicken",
+        "картошка": "potato", "картошки": "potato", "картошку": "potato", "картофель": "potato", "картофеля": "potato",
+        "мясо": "beef", "мяса": "beef", "говядина": "beef", "говядины": "beef",
+        "свинина": "pork", "свинины": "pork",
+        "суп": "soup", "супа": "soup", "бульон": "soup", "бульона": "soup",
+        "паста": "pasta", "макароны": "pasta", "спагетти": "pasta",
+        "рыба": "fish", "рыбы": "fish", "лосось": "salmon", "тунец": "tuna",
+        "салат": "salad", "салата": "salad",
+        "торт": "cake", "пирог": "cake", "кекс": "cake",
+        "пицца": "pizza",
+        "рис": "rice",
+        "яйца": "egg", "яйцо": "egg", "яиц": "egg",
+        "сыр": "cheese",
+        "хлеб": "bread",
+        "бекон": "bacon",
+        "креветки": "shrimp", "креветка": "shrimp",
+        "грибы": "mushroom", "грибов": "mushroom",
+        "лук": "onion",
+        "чеснок": "garlic",
+    }
+
+    # Ищем ключевые слова в запросе
+    found_ingredient = None
+    for word in query.replace(",", " ").replace(".", " ").split():
+        if word in FOOD_DICT:
+            found_ingredient = FOOD_DICT[word]
+            break # Берем первый найденный ингредиент
+
+    if not found_ingredient:
+        await update.message.reply_text(
+            f"😔 Я не знаю такого ингредиента.\n"
+            f"Попробуй простые слова: курица, картошка, мясо, суп, паста, рыба, салат, торт, пицца, рис, яйца."
+        )
+        return
+
+    await update.message.reply_text(f"🍳 Ищу рецепт с ингредиентом «{found_ingredient}»...")
 
     try:
-        # 1. Переводим через Google
-        translate_url = "https://translate.googleapis.com/translate_a/single"
-        params = {"client": "gtx", "sl": "ru", "tl": "en", "dt": "t", "q": query}
-        translate_res = requests.get(translate_url, params=params, timeout=10)
-        data = translate_res.json()
-        english_query = "".join([item[0] for item in data[0]]).lower()
-        
-        # Чистим от странных символов
-        english_query = english_query.replace("і", "i").strip()
-        print(f"Перевод: {query} -> {english_query}")
-
-        # 2. Ищем рецепт по всему переводу
-        url = f"https://www.themealdb.com/api/json/v1/1/search.php?s={english_query}"
+        url = f"https://www.themealdb.com/api/json/v1/1/search.php?s={found_ingredient}"
         res = requests.get(url, timeout=10)
         data = res.json()
-        
-        # Если не нашли по всей фразе, пробуем найти по последнему слову (главному ингредиенту)
-        if not data.get("meals") and len(english_query.split()) > 1:
-            main_ingredient = english_query.split()[-1] # Берем последнее слово
-            url = f"https://www.themealdb.com/api/json/v1/1/search.php?s={main_ingredient}"
-            res = requests.get(url, timeout=10)
-            data = res.json()
-            english_query = main_ingredient
-        
+
         if not data.get("meals"):
-            await update.message.reply_text(
-                f"😔 Рецепт по запросу «{english_query}» не найден.\n"
-                f"Совет: пиши только главный ингредиент или простое название блюда (например: курица, картошка, суп, паста)."
-            )
+            await update.message.reply_text(f"😔 Рецептов с «{found_ingredient}» не найдено.")
             return
             
         meal = data["meals"][0]
@@ -309,12 +323,11 @@ async def create_video_task(update: Update, prompt, image_path=None):
         await update.message.reply_text(f"Ошибка: {e}")
 
 async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Если пользователь отправил фото с текстом или без
     caption = update.message.caption or ""
     prompt = caption.replace("/photo", "").strip()
     
     if not prompt:
-        await update.message.reply_text("⚠️ Ты забыл написать описание к фото! Напиши в подписи к фото, что должно произойти (например: 'девушка улыбается').")
+        await update.message.reply_text("⚠️ Ты забыл написать описание к фото! Напиши в подписи к фото, что должно произойти.")
         return
         
     await update.message.reply_text("⏳ Получил фото, начинаю обработку...")
@@ -338,7 +351,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🍿 **Кино:** Напиши `/movie Название`.\n"
         "🎵 **Музыка:** Напиши `/music Название`.\n"
         "📺 **ТВ:** Введи `/tv`.\n"
-        "🍳 **Кулинария:** Введи `/recipe Название блюда` (на русском).\n"
+        "🍳 **Кулинария:** Введи `/recipe Ингредиент` (на русском).\n"
         "🎮 **Игры:** Введи `/game` или `/guess`.",
         parse_mode="Markdown"
     )
@@ -363,7 +376,7 @@ def main():
     app.add_handler(CommandHandler("recipe", search_recipe)) 
     app.add_handler(CommandHandler("game", play_game))      
     app.add_handler(CommandHandler("guess", guess_number))  
-    app.add_handler(CommandHandler("photo", text_photo_prompt)) # Если нажали /photo без фото
+    app.add_handler(CommandHandler("photo", text_photo_prompt))
     app.add_handler(CallbackQueryHandler(game_callback))   
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
     app.add_error_handler(error_handler)
