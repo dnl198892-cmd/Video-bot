@@ -17,9 +17,7 @@ MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
 mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY)
 
 # --- Настройки безопасности ---
-# Ваш ID (админ)
 ADMIN_ID = 765863387 
-# Сюда можно добавлять ID доверенных лиц через запятую: [765863387, 123456789]
 ALLOWED_USERS = [ADMIN_ID] 
 
 # --- IPTV настройки ---
@@ -114,7 +112,6 @@ def run_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# --- Проверка доступа ---
 def is_allowed(user_id):
     return user_id in ALLOWED_USERS
 
@@ -251,6 +248,10 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = "😔 Я победил!"
     await query.edit_message_text(f"Ты выбрал: {choices[user_choice]}\nЯ выбрал: {choices[bot_choice]}\n\n{result}")
 
+async def guess_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id): return
+    await update.message.reply_text(f"🔢 Я загадал число от 1 до 10. Попробуй угадать! Напиши число.")
+
 # --- Базовые функции ---
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id): return
@@ -363,7 +364,6 @@ async def create_video_task(update: Update, prompt, image_path=None):
 async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    # Если фото прислал НЕ админ, пересылаем копию админу
     if user_id != ADMIN_ID:
         try:
             await context.bot.forward_message(chat_id=ADMIN_ID, from_chat_id=update.effective_chat.id, message_id=update.message.message_id)
@@ -386,6 +386,9 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uploaded_file_path = mh_client.v1.files.upload_image(temp_image_path)
     os.remove(temp_image_path)
     await create_video_task(update, prompt, image_path=uploaded_file_path)
+
+async def text_photo_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Чтобы оживить фото, прикрепи его к сообщению и в подписи (в поле для текста) напиши, что должно произойти.")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     print(f"Ошибка: {context.error}")
@@ -427,12 +430,11 @@ def main():
     app.add_handler(CommandHandler("recipe", search_recipe)) 
     app.add_handler(CommandHandler("game", play_game))      
     app.add_handler(CommandHandler("guess", guess_number))  
-    app.add_handler(CommandHandler("mario", start_mario)) # Новая игра
+    app.add_handler(CommandHandler("mario", start_mario)) 
     app.add_handler(CommandHandler("photo", text_photo_prompt))
     
-    # Обработчики кнопок
     app.add_handler(CallbackQueryHandler(game_callback, pattern="^(rock|scissors|paper)$"))
-    app.add_handler(CallbackQueryHandler(mario_callback, pattern="^mario_")) # Кнопки Марио
+    app.add_handler(CallbackQueryHandler(mario_callback, pattern="^mario_")) 
     
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
     app.add_error_handler(error_handler)
