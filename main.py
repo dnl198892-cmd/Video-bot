@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import magic_hour
+from spellchecker import SpellChecker
 
 # --- Ключи ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -15,6 +16,9 @@ MAGIC_HOUR_KEY = os.getenv("MAGIC_HOUR_KEY")
 KINOPOISK_KEY = os.getenv("KINOPOISK_KEY")
 MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
 mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY)
+
+# Инициализируем корректор опечаток
+spell = SpellChecker(language='en')
 
 # --- IPTV настройки ---
 IPTV_URLS = [
@@ -108,42 +112,50 @@ def run_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# --- Telegram Бот ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Привет! Я твой умный помощник.\n\n"
-        "🎬 **Видео:** Отправь фото с подписью `/photo текст`.\n"
-        "🍿 **Кино:** Напиши `/movie Название`.\n"
-        "🎵 **Музыка:** Напиши `/music Название`.\n"
-        "📺 **ТВ:** Введи `/tv`.\n"
-        "🍳 **Кулинария:** Введи `/recipe Название блюда` (на англ., например: /recipe Chicken).\n"
-        "🎮 **Игры:** Введи `/game`, чтобы сыграть в Камень-Ножницы-Бумага!\n"
-        "🔢 **Угадай число:** Введи `/guess`.",
-        parse_mode="Markdown"
-    )
-
-async def send_tv_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    playlist_url = "https://video-bot-kf62.onrender.com/my_iptv.m3u"
-    await update.message.reply_text(
-        f"📺 Вот ссылка на твой плейлист:\n\n`{playlist_url}`\n\n"
-        f"Скопируй её и вставь в OTT Navigator.",
-        parse_mode="Markdown"
-    )
-
-# --- Кулинария ---
+# --- Кулинария (с исправлением опечаток) ---
 async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args)
     if not query:
-        await update.message.reply_text("Напиши название блюда (на английском). Пример: /recipe Pasta")
+        await update.message.reply_text("Напиши название блюда. Пример: /recipe курица")
         return
+        
     await update.message.reply_text(f"🍳 Ищу рецепт «{query}»...")
+
     try:
-        url = f"https://www.themealdb.com/api/json/v1/1/search.php?s={query}"
+        # 1. Переводим запрос на английский
+        translate_url = f"https://api.mymemory.translated.net/get?q={query}&langpair=ru|en"
+        translate_res = requests.get(translate_url, timeout=10)
+        translated_data = translate_res.json()
+        english_query = translated_data.get("responseData", {}).get("translatedText", query).lower()
+        
+        # 2. Исправляем опечатки (например, chiken -> chicken)
+        # Разбиваем на слова и ищем самое близкое правильное
+        words = english_query.split()
+        corrected_words = []
+        for word in words:
+            # Если слова нет в словаре, пытаемся найти правильный вариант
+            if word not in spell:
+                corrected = spell.correction(word)
+                if corrected:
+                    corrected_words.append(corrected)
+                else:
+                    corrected_words.append(word)
+            else:
+                corrected_words.append(word)
+                
+        final_query = " ".join(corrected_words)
+        print(f"Перевод и коррекция: {query} -> {english_query} -> {final_query}")
+
+        # 3. Ищем рецепт
+        url = f"https://www.themealdb.com/api/json/v1/1/search.php?s={final_query}"
         res = requests.get(url, timeout=10)
         data = res.json()
         
         if not data.get("meals"):
-            await update.message.reply_text("😔 Рецепт не найден. Попробуй на английском (например, 'Chicken' или 'Pasta').")
+            await update.message.reply_text(
+                f"😔 Рецепт по запросу «{final_query}» не найден.\n"
+                f"Попробуй простые слова: Chicken, Pasta, Beef, Soup, Cake."
+            )
             return
             
         meal = data["meals"][0]
@@ -153,7 +165,6 @@ async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         instructions = meal.get("strInstructions", "Инструкции отсутствуют.")
         image_url = meal.get("strMealThumb")
         
-        # Собираем ингредиенты
         ingredients = []
         for i in range(1, 21):
             ing = meal.get(f"strIngredient{i}")
@@ -162,7 +173,7 @@ async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ingredients.append(f"• {ing} - {meas}")
                 
         ing_text = "\n".join(ingredients)
-        caption = f"🍳 **{name}**\n🌍 Кухня: {area} | 🍽 Категория: {category}\n\n🛒 **Ингредиенты:**\n{ing_text}\n\n📝 **Рецепт:**\n{instructions[:800]}..." # Обрезаем, чтобы влезло в лимит
+        caption = f"🍳 **{name}**\n🌍 Кухня: {area} | 🍽 Категория: {category}\n\n🛒 **Ингредиенты:**\n{ing_text}\n\n📝 **Рецепт (на англ.):**\n{instructions[:800]}..."
         
         await update.message.reply_photo(photo=image_url, caption=caption, parse_mode="Markdown")
     except Exception as e:
@@ -342,15 +353,36 @@ def main():
     app.add_handler(CommandHandler("tv", send_tv_link))
     app.add_handler(CommandHandler("movie", search_movie))
     app.add_handler(CommandHandler("music", search_music))
-    app.add_handler(CommandHandler("recipe", search_recipe)) # Новая
-    app.add_handler(CommandHandler("game", play_game))      # Новая
-    app.add_handler(CommandHandler("guess", guess_number))  # Новая
-    app.add_handler(CallbackQueryHandler(game_callback))   # Кнопки для игры
+    app.add_handler(CommandHandler("recipe", search_recipe)) 
+    app.add_handler(CommandHandler("game", play_game))      
+    app.add_handler(CommandHandler("guess", guess_number))  
+    app.add_handler(CallbackQueryHandler(game_callback))   
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
     app.add_error_handler(error_handler)
     
     print("Бот и IPTV сервер запущены!")
     app.run_polling()
+
+# --- Функции start и send_tv_link (объявляем их до main, чтобы не было ошибок) ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Привет! Я твой умный помощник.\n\n"
+        "🎬 **Видео:** Отправь фото с подписью `/photo текст`.\n"
+        "🍿 **Кино:** Напиши `/movie Название`.\n"
+        "🎵 **Музыка:** Напиши `/music Название`.\n"
+        "📺 **ТВ:** Введи `/tv`.\n"
+        "🍳 **Кулинария:** Введи `/recipe Название блюда` (на русском).\n"
+        "🎮 **Игры:** Введи `/game` (Камень-Ножницы-Бумага) или `/guess` (Угадай число).",
+        parse_mode="Markdown"
+    )
+
+async def send_tv_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    playlist_url = "https://video-bot-kf62.onrender.com/my_iptv.m3u"
+    await update.message.reply_text(
+        f"📺 Вот ссылка на твой плейлист:\n\n`{playlist_url}`\n\n"
+        f"Скопируй её и вставь в OTT Navigator.",
+        parse_mode="Markdown"
+    )
 
 if __name__ == "__main__":
     main()
