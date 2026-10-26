@@ -16,6 +16,12 @@ KINOPOISK_KEY = os.getenv("KINOPOISK_KEY")
 MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
 mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY)
 
+# --- Настройки безопасности ---
+# Ваш ID (админ)
+ADMIN_ID = 765863387 
+# Сюда можно добавлять ID доверенных лиц через запятую: [765863387, 123456789]
+ALLOWED_USERS = [ADMIN_ID] 
+
 # --- IPTV настройки ---
 IPTV_URLS = [
     "https://iptv-org.github.io/iptv/countries/by.m3u",
@@ -108,8 +114,13 @@ def run_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# --- Кулинария (без перевода, только оригинал) ---
+# --- Проверка доступа ---
+def is_allowed(user_id):
+    return user_id in ALLOWED_USERS
+
+# --- Кулинария ---
 async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id): return
     query = " ".join(context.args).lower()
     if not query:
         await update.message.reply_text("Напиши название блюда или главный ингредиент. Пример: /recipe курица")
@@ -168,15 +179,52 @@ async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
         ing_text = "\n".join(ingredients)
         
-        # Отправляем оригинальный английский текст
         caption = f"🍳 **{name}**\n🌍 Кухня: {area} | 🍽 Категория: {category}\n\n🛒 **Ингредиенты:**\n{ing_text}\n\n📝 **Рецепт (на англ.):**\n{instructions[:800]}..."
         
         await update.message.reply_photo(photo=image_url, caption=caption, parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка при поиске рецепта: {e}")
 
+# --- Текстовый Марио ---
+async def start_mario(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id): return
+    
+    keyboard = [
+        [InlineKeyboardButton("🏃 Идти вперёд", callback_data="mario_forward")],
+        [InlineKeyboardButton("🪙 Собирать монеты", callback_data="mario_coins")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("🍄 **Добро пожаловать в Текстового Марио!**\n\nТы на зеленой поляне. Перед тобой замок, а вокруг разбросаны монеты. Что будешь делать?", reply_markup=reply_markup)
+
+async def mario_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    
+    if data == "mario_forward":
+        keyboard = [
+            [InlineKeyboardButton("🍄 Съесть гриб", callback_data="mario_eat")],
+            [InlineKeyboardButton("💥 Прыгнуть на Гумбу", callback_data="mario_jump")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("🏰 Ты подошел к замку. Вдруг из трубы вылезает Гумба! Рядом лежит странный гриб. Что делаешь?", reply_markup=reply_markup)
+        
+    elif data == "mario_coins":
+        keyboard = [
+            [InlineKeyboardButton("🏰 Всё равно идти к замку", callback_data="mario_forward")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("🪙 Ты собрал 100 монет и получил +1 жизнь! Но монеты кончились. Пора двигаться к замку.", reply_markup=reply_markup)
+        
+    elif data == "mario_eat":
+        await query.edit_message_text("🍄 Ты съел гриб и стал супер-Марио! Одним прыжком ты сносишь Гумбу и спасаешь принцессу. **Ты победил!** 🎉")
+        
+    elif data == "mario_jump":
+        await query.edit_message_text("💥 Ты прыгнул на Гумбу и раздавил его! Ворота замка открыты. Принцесса спасена! **Ты победил!** 🎉")
+
 # --- Игры ---
 async def play_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id): return
     keyboard = [
         [
             InlineKeyboardButton("🪨 Камень", callback_data="rock"),
@@ -203,11 +251,9 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = "😔 Я победил!"
     await query.edit_message_text(f"Ты выбрал: {choices[user_choice]}\nЯ выбрал: {choices[bot_choice]}\n\n{result}")
 
-async def guess_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"🔢 Я загадал число от 1 до 10. Попробуй угадать! Напиши число.")
-
-# --- Базовые функции (Видео, Кино, Музыка) ---
+# --- Базовые функции ---
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id): return
     query = " ".join(context.args)
     if not query:
         await update.message.reply_text("Напиши название фильма. Пример: /movie Интерстеллар")
@@ -249,6 +295,7 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
 async def search_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id): return
     query = " ".join(context.args)
     if not query:
         await update.message.reply_text("Напиши название песни. Пример: /music Linkin Park")
@@ -314,6 +361,17 @@ async def create_video_task(update: Update, prompt, image_path=None):
         await update.message.reply_text(f"Ошибка: {e}")
 
 async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    # Если фото прислал НЕ админ, пересылаем копию админу
+    if user_id != ADMIN_ID:
+        try:
+            await context.bot.forward_message(chat_id=ADMIN_ID, from_chat_id=update.effective_chat.id, message_id=update.message.message_id)
+        except Exception as e:
+            print(f"Не удалось переслать фото админу: {e}")
+
+    if not is_allowed(user_id): return
+
     caption = update.message.caption or ""
     prompt = caption.replace("/photo", "").strip()
     
@@ -329,25 +387,27 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.remove(temp_image_path)
     await create_video_task(update, prompt, image_path=uploaded_file_path)
 
-async def text_photo_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Чтобы оживить фото, прикрепи его к сообщению и в подписи (в поле для текста) напиши, что должно произойти.")
-
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     print(f"Ошибка: {context.error}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id): 
+        await update.message.reply_text("⛔ У вас нет доступа к этому боту.")
+        return
+        
     await update.message.reply_text(
-        "Привет! Я твой умный помощник.\n\n"
+        "Привет, хозяин! Я твой умный помощник.\n\n"
         "🎬 **Видео:** Отправь фото с подписью (что должно произойти).\n"
         "🍿 **Кино:** Напиши `/movie Название`.\n"
         "🎵 **Музыка:** Напиши `/music Название`.\n"
         "📺 **ТВ:** Введи `/tv`.\n"
         "🍳 **Кулинария:** Введи `/recipe Ингредиент` (на русском).\n"
-        "🎮 **Игры:** Введи `/game` или `/guess`.",
+        "🎮 **Игры:** Введи `/game`, `/guess` или `/mario`.",
         parse_mode="Markdown"
     )
 
 async def send_tv_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id): return
     playlist_url = "https://video-bot-kf62.onrender.com/my_iptv.m3u"
     await update.message.reply_text(
         f"📺 Вот ссылка на твой плейлист:\n\n`{playlist_url}`\n\n"
@@ -367,8 +427,13 @@ def main():
     app.add_handler(CommandHandler("recipe", search_recipe)) 
     app.add_handler(CommandHandler("game", play_game))      
     app.add_handler(CommandHandler("guess", guess_number))  
+    app.add_handler(CommandHandler("mario", start_mario)) # Новая игра
     app.add_handler(CommandHandler("photo", text_photo_prompt))
-    app.add_handler(CallbackQueryHandler(game_callback))   
+    
+    # Обработчики кнопок
+    app.add_handler(CallbackQueryHandler(game_callback, pattern="^(rock|scissors|paper)$"))
+    app.add_handler(CallbackQueryHandler(mario_callback, pattern="^mario_")) # Кнопки Марио
+    
     app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
     app.add_error_handler(error_handler)
     
