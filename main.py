@@ -108,21 +108,7 @@ def run_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# --- Функция перевода (синхронная, но мы будем вызывать её в отдельном потоке) ---
-def translate_text(text):
-    if not text or not text.strip():
-        return text
-    try:
-        safe_text = requests.utils.quote(text[:1500])
-        url = f"https://lingva.ml/api/v1/en/ru/{safe_text}"
-        res = requests.get(url, timeout=10)
-        if res.status_code == 200:
-            return res.json().get("translation", text)
-    except Exception as e:
-        print(f"Ошибка перевода: {e}")
-    return text
-
-# --- Кулинария ---
+# --- Кулинария (без перевода, только оригинал) ---
 async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).lower()
     if not query:
@@ -155,7 +141,7 @@ async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await update.message.reply_text(f"🍳 Ищу рецепт и перевожу на русский...")
+    await update.message.reply_text(f"🍳 Ищу рецепт...")
 
     try:
         url = f"https://www.themealdb.com/api/json/v1/1/search.php?s={found_ingredient}"
@@ -167,27 +153,23 @@ async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
             
         meal = data["meals"][0]
-        name_en = meal.get("strMeal", "Блюдо")
-        category_en = meal.get("strCategory", "")
-        area_en = meal.get("strArea", "")
-        instructions_en = meal.get("strInstructions", "")
+        name = meal.get("strMeal", "Блюдо")
+        category = meal.get("strCategory", "")
+        area = meal.get("strArea", "")
+        instructions = meal.get("strInstructions", "Инструкции отсутствуют.")
         image_url = meal.get("strMealThumb")
         
-        ing_text_en = ""
+        ingredients = []
         for i in range(1, 21):
             ing = meal.get(f"strIngredient{i}")
             meas = meal.get(f"strMeasure{i}")
             if ing and ing.strip():
-                ing_text_en += f"• {ing} - {meas}\n"
+                ingredients.append(f"• {ing} - {meas}")
+                
+        ing_text = "\n".join(ingredients)
         
-        # ВАЖНО: Переводим в отдельных потоках, чтобы не блокировать бота!
-        name_ru = await asyncio.to_thread(translate_text, name_en)
-        ing_text_ru = await asyncio.to_thread(translate_text, ing_text_en)
-        instructions_ru = await asyncio.to_thread(translate_text, instructions_en)
-        category_ru = await asyncio.to_thread(translate_text, category_en)
-        area_ru = await asyncio.to_thread(translate_text, area_en)
-
-        caption = f"🍳 **{name_ru}**\n🌍 Кухня: {area_ru} | 🍽 Категория: {category_ru}\n\n🛒 **Ингредиенты:**\n{ing_text_ru}\n\n📝 **Рецепт:**\n{instructions_ru[:800]}..."
+        # Отправляем оригинальный английский текст
+        caption = f"🍳 **{name}**\n🌍 Кухня: {area} | 🍽 Категория: {category}\n\n🛒 **Ингредиенты:**\n{ing_text}\n\n📝 **Рецепт (на англ.):**\n{instructions[:800]}..."
         
         await update.message.reply_photo(photo=image_url, caption=caption, parse_mode="Markdown")
     except Exception as e:
