@@ -153,37 +153,79 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Content-Type": "application/json"
             }
             payload = {
-                "model": "google/gemma-2-9b-it:free", # Более простая модель без "мыслей"
+                "model": "openrouter/free",
                 "messages": [
                     {"role": "system", "content": "Ты — дружелюбный Telegram-бот. Отвечай коротко (до 2-3 предложений), с юмором и строго по-русски. Если тебе пишут только смайлики, отвечай смайликами."},
                     {"role": "user", "content": text}
                 ],
                 "temperature": 0.8,
-                "max_tokens": 150
+                "max_tokens": 200
             }
             
-            response = await asyncio.to_thread(requests.post, url, headers=headers, json=payload, timeout=15)
+            response = await asyncio.to_thread(requests.post, url, headers=headers, json=payload, timeout=20)
             
             if response.status_code == 200:
                 data = response.json()
                 answer = data["choices"][0]["message"]["content"]
                 
-                # Проверка на пустой ответ (чтобы не было ошибки Message text is empty)
                 if not answer or not answer.strip():
                     answer = "Я задумался и потерял мысль... Повтори? 😅"
                 
                 await update.message.reply_text(answer)
                 return
-                
         except Exception as e:
             print(f"Ошибка OpenRouter: {e}")
 
-    # Запасной вариант (если ключа нет или ИИ упал)
+    # Запасной вариант
     if "привет" in text.lower():
         jokes = ["О, привет! Я тут фильмы ищу, а ты?", "Привет. Мне тут сказали, что я бот. Врут ведь, да?"]
         await update.message.reply_text(random.choice(jokes))
     else:
-        await update.message.reply_text("Хм, интересно. Напиши /start, чтобы увидеть мои команды!")
+        responses = ["Хм, интересная мысль.", "Согласен. Кстати, ты пробовал /snake?", "Напиши /start, чтобы увидеть мои команды."]
+        await update.message.reply_text(random.choice(responses))
+
+# --- НОВАЯ ФУНКЦИЯ ПЕРЕВОДА ---
+async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not OPENROUTER_API_KEY:
+        await update.message.reply_text("Для перевода нужен ключ OpenRouter.")
+        return
+
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("Пример использования:\n`/translate en Привет мир` (на англ.)\n`/translate ru Hello world` (на рус.)", parse_mode="Markdown")
+        return
+
+    lang = args[0]
+    text_to_translate = " ".join(args[1:])
+
+    await update.message.reply_text(f"🌍 Перевожу на язык `{lang}`...", parse_mode="Markdown")
+
+    try:
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "openrouter/free",
+            "messages": [
+                {"role": "system", "content": f"Ты — профессиональный переводчик. Переведи следующий текст на язык с кодом '{lang}'. Выведи ТОЛЬКО перевод, без лишних слов, кавычек и объяснений."},
+                {"role": "user", "content": text_to_translate}
+            ],
+            "temperature": 0.3,
+            "max_tokens": 500
+        }
+        
+        response = await asyncio.to_thread(requests.post, url, headers=headers, json=payload, timeout=20)
+        
+        if response.status_code == 200:
+            data = response.json()
+            answer = data["choices"][0]["message"]["content"]
+            await update.message.reply_text(f"📝 **Перевод:**\n{answer}", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"⚠️ Ошибка API: {response.status_code}")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Ошибка: {e}")
 
 # --- Функции игр ---
 async def start_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -404,7 +446,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привет, хозяин! Я твой умный помощник.\n\n"
         "🎬 **Видео:** Отправь фото с подписью.\n🍿 **Кино:** /movie Название.\n🎵 **Музыка:** /music Название.\n📺 **ТВ:** /tv.\n🍳 **Еда:** /recipe Ингредиент.\n"
-        "🎮 **Игры:** /game, /snake, /guess, /mario.",
+        "🌍 **Перевод:** /translate en Текст.\n🎮 **Игры:** /game, /snake, /guess, /mario.",
         parse_mode="Markdown"
     )
 
@@ -422,6 +464,7 @@ def main():
     app.add_handler(CommandHandler("movie", search_movie))
     app.add_handler(CommandHandler("music", search_music))
     app.add_handler(CommandHandler("recipe", search_recipe)) 
+    app.add_handler(CommandHandler("translate", translate_command)) # Новая команда
     app.add_handler(CommandHandler("game", play_game))      
     app.add_handler(CommandHandler("snake", start_snake)) 
     app.add_handler(CommandHandler("guess", start_guess))  
