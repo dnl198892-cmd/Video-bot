@@ -23,14 +23,15 @@ ADMIN_ID = 765863387
 ALLOWED_USERS = [765863387, 1331828023] 
 
 # --- Настройки напоминалки ---
-TIMEZONE = pytz.timezone('Europe/Minsk') # Минское время (UTC+3)
+TIMEZONE = pytz.timezone('Europe/Minsk')
 MORNING_TIME = datetime.time(hour=9, minute=0, tzinfo=TIMEZONE)
 NIGHT_TIME = datetime.time(hour=21, minute=0, tzinfo=TIMEZONE)
 
-# Сюда бот будет сохранять, кого тегать (по умолчанию никого)
-TARGET_MORNING = None
-TARGET_NIGHT = None
-ACTIVE_CHAT_ID = None # Группа, в которую бот будет писать
+# ID Алёны и ссылка для тегания (работает даже без юзернейма)
+ALENA_ID = 1331828023
+ALENA_TAG = f"<a href='tg://user?id={ALENA_ID}'>Алёна</a>"
+# Сюда бот будет писать (ID вашей группы)
+ACTIVE_CHAT_ID = None 
 
 # --- Игры ---
 snake_games = {}
@@ -131,51 +132,31 @@ def run_server():
 def is_allowed(user_id):
     return user_id in ALLOWED_USERS
 
-# --- Настройка тегания ---
-async def set_tag(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global TARGET_MORNING, TARGET_NIGHT, ACTIVE_CHAT_ID
-    
+# --- Запоминаем группу, где бот будет писать ---
+async def set_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ACTIVE_CHAT_ID
     if not is_allowed(update.effective_user.id): return
-    
-    args = context.args
-    if len(args) < 2:
-        await update.message.reply_text("Используй: `/set_tag утро/вечер @username`\nПример: `/set_tag вечер @Alena`", parse_mode="Markdown")
-        return
-    
-    time_of_day = args[0].lower()
-    username = args[1]
-    if not username.startswith("@"):
-        username = "@" + username
-
     ACTIVE_CHAT_ID = update.effective_chat.id
-
-    if time_of_day == "утро":
-        TARGET_MORNING = username
-        await update.message.reply_text(f"✅ Настроено! Каждое утро в 09:00 я буду тегать {username}.")
-    elif time_of_day == "вечер":
-        TARGET_NIGHT = username
-        await update.message.reply_text(f"✅ Настроено! Каждый вечер в 21:00 я буду тегать {username}.")
-    else:
-        await update.message.reply_text("Напиши 'утро' или 'вечер'.")
+    await update.message.reply_text("✅ Я запомнил этот чат! Теперь утренние и вечерние приветствия будут приходить сюда.")
 
 # --- Задачи по расписанию ---
 async def send_morning_greeting(context: ContextTypes.DEFAULT_TYPE):
-    if TARGET_MORNING and ACTIVE_CHAT_ID:
+    if ACTIVE_CHAT_ID:
         await context.bot.send_message(
             chat_id=ACTIVE_CHAT_ID, 
-            text=f"☀️ **Доброе утро, {TARGET_MORNING}!**\nПросыпайся, нас ждут великие дела! ☕",
-            parse_mode="Markdown"
+            text=f"☀️ **Доброе утро, {ALENA_TAG}!**\nПросыпайся, нас ждут великие дела! ☕",
+            parse_mode="HTML"
         )
 
 async def send_night_greeting(context: ContextTypes.DEFAULT_TYPE):
-    if TARGET_NIGHT and ACTIVE_CHAT_ID:
+    if ACTIVE_CHAT_ID:
         await context.bot.send_message(
             chat_id=ACTIVE_CHAT_ID, 
-            text=f"🌙 **Спокойной ночи, {TARGET_NIGHT}!**\nСладких снов и отдыхай! 💤",
-            parse_mode="Markdown"
+            text=f"🌙 **Спокойной ночи, {ALENA_TAG}!**\nСладких снов и отдыхай! 💤",
+            parse_mode="HTML"
         )
 
-# --- Умный чат через OpenRouter (без изменений) ---
+# --- Умный чат через OpenRouter ---
 async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if not text: return
@@ -200,7 +181,6 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     if not OPENROUTER_API_KEY:
-        await update.message.reply_text("⚠️ В настройках Render не добавлен ключ `OPENROUTER_API_KEY`.")
         return
 
     try:
@@ -221,16 +201,12 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             answer = data.get("choices", [{}])[0].get("message", {}).get("content")
             answer = answer.replace("User Safety: safe", "").strip() if answer else "Я задумался... Давай еще раз? 😅"
             await update.message.reply_text(answer)
-        else:
-            await update.message.reply_text(f"⚠️ Нейросеть выдала ошибку: `{response.status_code}`. Попробуй позже.", parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Ошибка подключения к ИИ: `{e}`", parse_mode="Markdown")
+        pass # Молча игнорируем ошибки ИИ, чтобы не спамить в чат
 
 # --- ФУНКЦИЯ ПЕРЕВОДА ---
 async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not OPENROUTER_API_KEY:
-        await update.message.reply_text("Для перевода нужен ключ OpenRouter.")
-        return
+    if not OPENROUTER_API_KEY: return
     args = context.args
     if len(args) < 2:
         await update.message.reply_text("Пример: `/translate en Привет мир`", parse_mode="Markdown")
@@ -253,7 +229,7 @@ async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"⚠️ Ошибка: {e}")
 
-# --- Функции игр (без изменений) ---
+# --- Функции игр ---
 async def start_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     guess_games[chat_id] = random.randint(1, 10)
@@ -333,7 +309,7 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: result = "😔 Я победил!"
     await query.edit_message_text(f"Ты выбрал: {choices[user_choice]}\nЯ выбрал: {choices[bot_choice]}\n\n{result}")
 
-# --- Кулинария, Кино, Музыка, Видео (без изменений) ---
+# --- Кулинария, Кино, Музыка, Видео ---
 async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).lower()
     if not query:
@@ -469,7 +445,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Привет, хозяин! Я твой умный помощник.\n\n"
         "🎬 **Видео:** Отправь фото с подписью.\n🍿 **Кино:** /movie Название.\n🎵 **Музыка:** /music Название.\n📺 **ТВ:** /tv.\n🍳 **Еда:** /recipe Ингредиент.\n"
         "🌍 **Перевод:** /translate en Текст.\n"
-        "⏰ **Напоминалка:** /set_tag утро/вечер @username\n"
+        "⏰ **Напоминалка:** Напиши `/setchat` в группе, где я должен всех будить!\n"
         "🎮 **Игры:** /game, /snake, /guess.",
         parse_mode="Markdown"
     )
@@ -490,7 +466,7 @@ def main():
     app.add_handler(CommandHandler("music", search_music))
     app.add_handler(CommandHandler("recipe", search_recipe)) 
     app.add_handler(CommandHandler("translate", translate_command))
-    app.add_handler(CommandHandler("set_tag", set_tag)) # Новая команда
+    app.add_handler(CommandHandler("setchat", set_chat)) # Новая команда для привязки группы
     app.add_handler(CommandHandler("game", play_game))      
     app.add_handler(CommandHandler("snake", start_snake)) 
     app.add_handler(CommandHandler("guess", start_guess))  
@@ -503,7 +479,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler)) 
     app.add_error_handler(error_handler)
     
-    # Настраиваем ежедневные задачи
+    # Настраиваем ежедневные задачи (теперь они включены всегда)
     if app.job_queue:
         app.job_queue.run_daily(send_morning_greeting, time=MORNING_TIME, name="morning_greeting")
         app.job_queue.run_daily(send_night_greeting, time=NIGHT_TIME, name="night_greeting")
