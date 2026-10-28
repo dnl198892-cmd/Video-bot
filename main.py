@@ -6,6 +6,7 @@ import asyncio
 import random
 import datetime
 import pytz
+import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -17,7 +18,9 @@ MAGIC_HOUR_KEY = os.getenv("MAGIC_HOUR_KEY")
 KINOPOISK_KEY = os.getenv("KINOPOISK_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
-mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY)
+
+# Безопасная инициализация клиента Magic Hour
+mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY) if MAGIC_HOUR_KEY else None
 
 ADMIN_ID = 765863387 
 ALLOWED_USERS = [765863387, 1331828023] 
@@ -27,10 +30,9 @@ TIMEZONE = pytz.timezone('Europe/Minsk')
 MORNING_TIME = datetime.time(hour=9, minute=0, tzinfo=TIMEZONE)
 NIGHT_TIME = datetime.time(hour=21, minute=0, tzinfo=TIMEZONE)
 
-# ID Алёны и ссылка для тегания (работает даже без юзернейма)
+# ID Алёны и ссылка для тегания
 ALENA_ID = 1331828023
 ALENA_TAG = f"<a href='tg://user?id={ALENA_ID}'>Алёна</a>"
-# Сюда бот будет писать (ID вашей группы)
 ACTIVE_CHAT_ID = None 
 
 # --- Игры ---
@@ -132,14 +134,12 @@ def run_server():
 def is_allowed(user_id):
     return user_id in ALLOWED_USERS
 
-# --- Запоминаем группу, где бот будет писать ---
 async def set_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ACTIVE_CHAT_ID
     if not is_allowed(update.effective_user.id): return
     ACTIVE_CHAT_ID = update.effective_chat.id
     await update.message.reply_text("✅ Я запомнил этот чат! Теперь утренние и вечерние приветствия будут приходить сюда.")
 
-# --- Задачи по расписанию ---
 async def send_morning_greeting(context: ContextTypes.DEFAULT_TYPE):
     if ACTIVE_CHAT_ID:
         await context.bot.send_message(
@@ -156,7 +156,6 @@ async def send_night_greeting(context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
 
-# --- Умный чат через OpenRouter ---
 async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if not text: return
@@ -180,8 +179,7 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Пожалуйста, напиши число от 1 до 10.")
             return
 
-    if not OPENROUTER_API_KEY:
-        return
+    if not OPENROUTER_API_KEY: return
 
     try:
         url = "https://openrouter.ai/api/v1/chat/completions"
@@ -194,6 +192,7 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             "temperature": 0.7, "max_tokens": 200
         }
+        # ИСПРАВЛЕНИЕ: Запрос в отдельном потоке, чтобы не вешать бота
         response = await asyncio.to_thread(requests.post, url, headers=headers, json=payload, timeout=20)
         
         if response.status_code == 200:
@@ -202,9 +201,8 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             answer = answer.replace("User Safety: safe", "").strip() if answer else "Я задумался... Давай еще раз? 😅"
             await update.message.reply_text(answer)
     except Exception as e:
-        pass # Молча игнорируем ошибки ИИ, чтобы не спамить в чат
+        print(f"Ошибка ИИ: {e}")
 
-# --- ФУНКЦИЯ ПЕРЕВОДА ---
 async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not OPENROUTER_API_KEY: return
     args = context.args
@@ -229,7 +227,6 @@ async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"⚠️ Ошибка: {e}")
 
-# --- Функции игр ---
 async def start_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     guess_games[chat_id] = random.randint(1, 10)
@@ -309,7 +306,6 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: result = "😔 Я победил!"
     await query.edit_message_text(f"Ты выбрал: {choices[user_choice]}\nЯ выбрал: {choices[bot_choice]}\n\n{result}")
 
-# --- Кулинария, Кино, Музыка, Видео ---
 async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).lower()
     if not query:
@@ -322,7 +318,8 @@ async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(f"🍳 Ищу рецепт...")
     try:
-        res = requests.get(f"https://www.themealdb.com/api/json/v1/1/search.php?s={found_ingredient}", timeout=10)
+        # ИСПРАВЛЕНИЕ: Асинхронный запрос
+        res = await asyncio.to_thread(requests.get, f"https://www.themealdb.com/api/json/v1/1/search.php?s={found_ingredient}", timeout=10)
         data = res.json()
         if not data.get("meals"):
             await update.message.reply_text(f"😔 Рецептов не найдено.")
@@ -343,7 +340,7 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         headers = {"X-API-KEY": KINOPOISK_KEY}
         url = f"https://api.poiskkino.dev/v1.4/movie/search?page=1&limit=1&query={query}"
-        res = requests.get(url, headers=headers, timeout=25)
+        res = await asyncio.to_thread(requests.get, url, headers=headers, timeout=25)
         data = res.json()
         if not data.get("docs"):
             await update.message.reply_text("😔 Ничего не нашлось.")
@@ -352,11 +349,16 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name = movie.get("name") or movie.get("alternativeName") or "Без названия"
         caption = f"🎬 **{name}** ({movie.get('year')})\n⭐ Рейтинг: {movie.get('rating', {}).get('kp', '—')}\n\n📝 {movie.get('description', 'Описание отсутствует.')}"
         poster = movie.get("poster", {}).get("url")
+        
         if poster:
-            img_res = requests.get(poster, timeout=10)
-            with open("poster_temp.jpg", "wb") as f: f.write(img_res.content)
-            with open("poster_temp.jpg", "rb") as f: await update.message.reply_photo(photo=f, caption=caption, parse_mode="Markdown")
-            os.remove("poster_temp.jpg")
+            # ИСПРАВЛЕНИЕ: уникальное имя файла, чтобы не было конфликтов
+            filename = f"poster_{uuid.uuid4().hex}.jpg"
+            img_res = await asyncio.to_thread(requests.get, poster, timeout=10)
+            with open(filename, "wb") as f: 
+                f.write(img_res.content)
+            with open(filename, "rb") as f: 
+                await update.message.reply_photo(photo=f, caption=caption, parse_mode="Markdown")
+            os.remove(filename)
         else:
             await update.message.reply_text(caption, parse_mode="Markdown")
     except Exception as e:
@@ -369,7 +371,7 @@ async def search_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(f"🎵 Ищу песню «{query}»...")
     try:
-        res = requests.get(f"https://itunes.apple.com/search?term={query}&entity=song&limit=1", timeout=10)
+        res = await asyncio.to_thread(requests.get, f"https://itunes.apple.com/search?term={query}&entity=song&limit=1", timeout=10)
         data = res.json()
         if not data.get("results"):
             await update.message.reply_text("😔 Ничего не нашлось.")
@@ -392,15 +394,16 @@ async def create_video_task(update: Update, prompt, image_path=None):
         payload = {"model": "ltx-2.5", "prompt": prompt, "end_seconds": 5, "resolution": "480p", "aspect_ratio": "16:9", "style": {"prompt": prompt}}
         endpoint = f"{MAGIC_HOUR_URL}/text-to-video"
     try:
-        res = requests.post(endpoint, headers=headers, json=payload, timeout=30)
+        res = await asyncio.to_thread(requests.post, endpoint, headers=headers, json=payload, timeout=30)
         if res.status_code != 200:
             await update.message.reply_text(f"❌ Ошибка Magic Hour: {res.text}")
             return
         data = res.json()
         project_id = data.get("project_id") or data.get("id")
+        
         for i in range(60):
             await asyncio.sleep(10)
-            check = requests.get(f"{MAGIC_HOUR_URL}/projects/{project_id}", headers=headers, timeout=30)
+            check = await asyncio.to_thread(requests.get, f"{MAGIC_HOUR_URL}/projects/{project_id}", headers=headers, timeout=30)
             result = check.json()
             if str(result.get("status", "")).lower() in ["complete", "completed", "succeeded"]:
                 await update.message.reply_video(video=result["downloads"][0].get("url"), caption="Ваше видео готово!", supports_streaming=True)
@@ -418,74 +421,73 @@ async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try: await context.bot.forward_message(chat_id=ADMIN_ID, from_chat_id=update.effective_chat.id, message_id=update.message.message_id)
         except Exception as e: print(f"Не удалось переслать фото: {e}")
     if not is_allowed(user_id): return
+    
     caption = update.message.caption or ""
     prompt = caption.replace("/photo", "").strip()
     if not prompt:
         await update.message.reply_text("⚠️ Напиши в подписи к фото, что должно произойти.")
         return
-    await update.message.reply_text("⏳ Получил фото, начинаю обработку...")
-    photo_file = await update.message.photo[-1].get_file()
-    temp_image_path = "temp_image.jpg"
-    await photo_file.download_to_drive(custom_path=temp_image_path)
-    uploaded_file_path = mh_client.v1.files.upload_image(temp_image_path)
-    os.remove(temp_image_path)
-    await create_video_task(update, prompt, image_path=uploaded_file_path)
+        
+    # ИСПРАВЛЕНИЕ: Добавлена логика скачивания фото и запуска генерации!
+    await update.message.reply_text("⏳ Скачиваю фото и начинаю генерацию видео...")
+    try:
+        photo_file = await update.message.photo[-1].get_file()
+        filename = f"temp_{uuid.uuid4().hex}.jpg"
+        await photo_file.download_to_drive(filename)
+        
+        # Запускаем задачу
+        await create_video_task(update, prompt, image_path=filename)
+        
+        # Удаляем временный файл
+        if os.path.exists(filename):
+            os.remove(filename)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка при скачивании/отправке фото: {e}")
 
-async def text_photo_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Чтобы оживить фото, прикрепи его к сообщению и в подписи напиши, что должно произойти.")
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    print(f"Ошибка: {context.error}")
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update.effective_user.id): 
-        await update.message.reply_text("⛔ У вас нет доступа к этому боту.")
-        return
-    await update.message.reply_text(
-        "Привет, хозяин! Я твой умный помощник.\n\n"
-        "🎬 **Видео:** Отправь фото с подписью.\n🍿 **Кино:** /movie Название.\n🎵 **Музыка:** /music Название.\n📺 **ТВ:** /tv.\n🍳 **Еда:** /recipe Ингредиент.\n"
-        "🌍 **Перевод:** /translate en Текст.\n"
-        "⏰ **Напоминалка:** Напиши `/setchat` в группе, где я должен всех будить!\n"
-        "🎮 **Игры:** /game, /snake, /guess.",
-        parse_mode="Markdown"
-    )
-
-async def send_tv_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update.effective_user.id): return
-    await update.message.reply_text(f"📺 Ссылка на плейлист:\n\n`https://video-bot-kf62.onrender.com/my_iptv.m3u`", parse_mode="Markdown")
-
+# --- ЗАПУСК БОТА (Main) ---
 def main():
-    threading.Thread(target=run_server, daemon=True).start()
-    threading.Thread(target=update_playlist, daemon=True).start()
-    
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("tv", send_tv_link))
-    app.add_handler(CommandHandler("movie", search_movie))
-    app.add_handler(CommandHandler("music", search_music))
-    app.add_handler(CommandHandler("recipe", search_recipe)) 
-    app.add_handler(CommandHandler("translate", translate_command))
-    app.add_handler(CommandHandler("setchat", set_chat)) # Новая команда для привязки группы
-    app.add_handler(CommandHandler("game", play_game))      
-    app.add_handler(CommandHandler("snake", start_snake)) 
-    app.add_handler(CommandHandler("guess", start_guess))  
-    app.add_handler(CommandHandler("photo", text_photo_prompt))
-    
-    app.add_handler(CallbackQueryHandler(game_callback, pattern="^(rock|scissors|paper)$"))
-    app.add_handler(CallbackQueryHandler(snake_callback, pattern="^snake_")) 
-    
-    app.add_handler(MessageHandler(filters.PHOTO, photo_to_video))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler)) 
-    app.add_error_handler(error_handler)
-    
-    # Настраиваем ежедневные задачи (теперь они включены всегда)
-    if app.job_queue:
-        app.job_queue.run_daily(send_morning_greeting, time=MORNING_TIME, name="morning_greeting")
-        app.job_queue.run_daily(send_night_greeting, time=NIGHT_TIME, name="night_greeting")
+    if not TELEGRAM_TOKEN:
+        print("ОШИБКА: Не задан TELEGRAM_TOKEN!")
+        return
 
-    print("Бот и IPTV сервер запущены!")
-    app.run_polling()
+    # Запуск IPTV сервера в фоне (чтобы не блокировать бота)
+    threading.Thread(target=run_server, daemon=True).start()
+    # Обновление плейлиста в фоне (чтобы бот запустился мгновенно)
+    threading.Thread(target=update_playlist, daemon=True).start()
+
+    print("Запускаю Telegram-бота...")
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    # Регистрация команд
+    application.add_handler(CommandHandler("set_chat", set_chat))
+    application.add_handler(CommandHandler("translate", translate_command))
+    application.add_handler(CommandHandler("recipe", search_recipe))
+    application.add_handler(CommandHandler("movie", search_movie))
+    application.add_handler(CommandHandler("music", search_music))
+    application.add_handler(CommandHandler("guess", start_guess))
+    application.add_handler(CommandHandler("snake", start_snake))
+    application.add_handler(CommandHandler("rps", play_game)) # /rps для игры в камень-ножницы-бумага
+
+    # Обработчик фото (с командой /photo в подписи)
+    application.add_handler(MessageHandler(filters.PHOTO & filters.CaptionRegex(r'^/photo'), photo_to_video))
+
+    # Обработчики кнопок (Callback)
+    application.add_handler(CallbackQueryHandler(snake_callback, pattern="^snake_"))
+    application.add_handler(CallbackQueryHandler(game_callback, pattern="^(rock|scissors|paper)$"))
+
+    # Обработчик обычных текстовых сообщений (чат и угадай число)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler))
+
+    # Ежедневные задачи (напоминалки)
+    if application.job_queue:
+        application.job_queue.run_daily(send_morning_greeting, time=MORNING_TIME)
+        application.job_queue.run_daily(send_night_greeting, time=NIGHT_TIME)
+    else:
+        print("ПРЕДУПРЕЖДЕНИЕ: Установите библиотеку python-telegram-bot[job-queue] для работы напоминалок.")
+
+    # Запуск опроса (polling)
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
