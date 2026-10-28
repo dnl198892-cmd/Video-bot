@@ -134,6 +134,25 @@ def run_server():
 def is_allowed(user_id):
     return user_id in ALLOWED_USERS
 
+# --- НОВЫЙ ОБРАБОТЧИК /start ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id): return
+    await update.message.reply_text(
+        "Привет! Я твой умный помощник.\n\n"
+        "Вот что я умею:\n"
+        "🎬 /movie [название] — поиск фильма\n"
+        "🍳 /recipe [ингредиент] — поиск рецепта\n"
+        "🎵 /music [название] — поиск песни\n"
+        "🌍 /translate [язык] [текст] — перевод\n"
+        "🎮 /snake — игра Змейка\n"
+        "🔢 /guess — угадай число\n"
+        "🪨 /rps — камень-ножницы-бумага\n"
+        "🖼 /photo [описание] (в подписи к фото) — оживить фото\n"
+        "📺 /tv — ссылка на IPTV плейлист\n"
+        "⏰ /set_chat — установить этот чат для напоминаний\n\n"
+        "А еще я могу просто болтать! Напиши мне что-нибудь."
+    )
+
 async def set_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ACTIVE_CHAT_ID
     if not is_allowed(update.effective_user.id): return
@@ -392,14 +411,12 @@ async def create_video_task(update: Update, prompt, image_path=None):
     if image_path:
         await update.message.reply_text("⏳ Загружаю фото в облако Magic Hour...")
         try:
-            # ШАГ 1: Загружаем файл через SDK, чтобы получить валидный путь
-            # Оборачиваем в to_thread, так как SDK синхронный
+            # ИСПОЛЬЗУЕМ ПРАВИЛЬНЫЙ МЕТОД ЗАГРУЗКИ
             uploaded_file_path = await asyncio.to_thread(
                 mh_client.v1.files.upload_file,
                 file=image_path
             )
             
-            # ШАГ 2: Формируем запрос с ПРАВИЛЬНЫМ путем
             payload = {
                 "model": "ltx-2.5", 
                 "assets": {"image_file_path": uploaded_file_path}, 
@@ -480,15 +497,14 @@ def main():
         print("ОШИБКА: Не задан TELEGRAM_TOKEN!")
         return
 
-    # Запуск IPTV сервера в фоне
     threading.Thread(target=run_server, daemon=True).start()
-    # Обновление плейлиста в фоне
     threading.Thread(target=update_playlist, daemon=True).start()
 
     print("Запускаю Telegram-бота...")
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     # Регистрация команд
+    application.add_handler(CommandHandler("start", start))  # <-- ДОБАВЛЕН /start
     application.add_handler(CommandHandler("set_chat", set_chat))
     application.add_handler(CommandHandler("translate", translate_command))
     application.add_handler(CommandHandler("recipe", search_recipe))
@@ -498,17 +514,17 @@ def main():
     application.add_handler(CommandHandler("snake", start_snake))
     application.add_handler(CommandHandler("rps", play_game))
 
-    # Обработчик фото (с командой /photo в подписи)
+    # Обработчик фото
     application.add_handler(MessageHandler(filters.PHOTO & filters.CaptionRegex(r'^/photo'), photo_to_video))
 
-    # Обработчики кнопок (Callback)
+    # Обработчики кнопок
     application.add_handler(CallbackQueryHandler(snake_callback, pattern="^snake_"))
     application.add_handler(CallbackQueryHandler(game_callback, pattern="^(rock|scissors|paper)$"))
 
-    # Обработчик обычных текстовых сообщений
+    # Обработчик обычных текстовых сообщений (ИСКЛЮЧАЕМ КОМАНДЫ)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler))
 
-    # Ежедневные задачи (напоминалки)
+    # Ежедневные задачи
     if application.job_queue:
         application.job_queue.run_daily(send_morning_greeting, time=MORNING_TIME)
         application.job_queue.run_daily(send_night_greeting, time=NIGHT_TIME)
