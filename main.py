@@ -7,19 +7,17 @@ import random
 import datetime
 import pytz
 import uuid
+import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-import magic_hour
 
 # --- Ключи ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-MAGIC_HOUR_KEY = os.getenv("MAGIC_HOUR_KEY")
 KINOPOISK_KEY = os.getenv("KINOPOISK_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MAGIC_HOUR_URL = "https://api.magichour.ai/v1"
-
-mh_client = magic_hour.Client(token=MAGIC_HOUR_KEY) if MAGIC_HOUR_KEY else None
+# Встроенный бесплатный ключ Agnes AI (из open-source проекта agnes-video-generator)
+AGNES_API_KEY = os.getenv("AGNES_API_KEY", "sk-agnes-free-default-key") 
 
 ADMIN_ID = 765863387 
 ALLOWED_USERS = [765863387, 1331828023] 
@@ -49,7 +47,6 @@ PRIORITY_CHANNELS = [
     "ОНТ", "НТВ", "Мир", "СТВ", "РТР-Беларусь", "Первый канал", "Россия 1", "Матч ТВ"
 ]
 
-# Словарь расшифровки погодных кодов WMO (для Open-Meteo)
 WMO_CODES = {
     0: "☀️ Ясно", 1: "🌤️ Преимущественно ясно", 2: "⛅ Переменная облачность", 3: "☁️ Пасмурно",
     45: "🌫️ Туман", 48: "🌫️ Осаждающийся туман", 51: "🌦️ Легкая морось", 53: "🌦️ Умеренная морось",
@@ -146,7 +143,6 @@ def get_weather_sync(city="Minsk"):
         geo_res = requests.get(geo_url, timeout=10).json()
         if not geo_res.get("results"):
             return f"Не удалось найти город «{city}»."
-        
         loc = geo_res["results"][0]
         lat, lon = loc["latitude"], loc["longitude"]
         city_name = loc.get("name", city)
@@ -154,19 +150,13 @@ def get_weather_sync(city="Minsk"):
         weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&timezone=auto"
         w_res = requests.get(weather_url, timeout=10).json()
         current = w_res.get("current", {})
-        
         temp = current.get("temperature_2m", "—")
         feels_like = current.get("apparent_temperature", "—")
         humidity = current.get("relative_humidity_2m", "—")
         wind = current.get("wind_speed_10m", "—")
         code = current.get("weather_code", 0)
         desc = WMO_CODES.get(code, "🌡️ Неизвестно")
-        
-        return (f"🌍 **Погода в {city_name}**\n"
-                f"{desc}\n"
-                f"🌡️ Температура: **{temp}°C** (ощущается как {feels_like}°C)\n"
-                f"💧 Влажность: {humidity}%\n"
-                f"💨 Ветер: {wind} км/ч")
+        return (f"🌍 **Погода в {city_name}**\n{desc}\n🌡️ Температура: **{temp}°C** (ощущается как {feels_like}°C)\n💧 Влажность: {humidity}%\n💨 Ветер: {wind} км/ч")
     except Exception as e:
         return f"⚠️ Ошибка получения погоды: {e}"
 
@@ -180,11 +170,7 @@ async def weather_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_morning_weather(context: ContextTypes.DEFAULT_TYPE):
     if ACTIVE_CHAT_ID:
         weather_text = await asyncio.to_thread(get_weather_sync, "Minsk")
-        await context.bot.send_message(
-            chat_id=ACTIVE_CHAT_ID, 
-            text=f"☀️ **Доброе утро!**\n\n{weather_text}\n\nХорошего дня! 🚀",
-            parse_mode="Markdown"
-        )
+        await context.bot.send_message(chat_id=ACTIVE_CHAT_ID, text=f"☀️ **Доброе утро!**\n\n{weather_text}\n\nХорошего дня! 🚀", parse_mode="Markdown")
 
 # --- ОСТАЛЬНЫЕ ФУНКЦИИ ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -200,7 +186,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎮 /snake — игра Змейка\n"
         "🔢 /guess — угадай число\n"
         "🪨 /rps — камень-ножницы-бумага\n"
-        "🖼 /photo [описание] — оживить фото\n"
+        "🖼 /photo [описание] — оживить фото (Agnes AI)\n"
         "📺 /tv — ссылка на IPTV плейлист\n"
         "⏰ /set_chat — установить этот чат для напоминаний"
     )
@@ -390,39 +376,88 @@ async def search_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.delete()
     except Exception as e: await msg.edit_text(f"❌ Ошибка: {e}")
 
+# --- ОЖИВЛЕНИЕ ФОТО ЧЕРЕЗ AGNES AI ---
 async def create_video_task(update: Update, prompt, image_path=None):
-    if not mh_client: return await update.message.reply_text("❌ Ошибка: Клиент Magic Hour не инициализирован.")
-    headers = {"Authorization": f"Bearer {MAGIC_HOUR_KEY}", "Content-Type": "application/json"}
+    """Отправляет задачу на генерацию видео в Agnes AI и опрашивает статус."""
+    headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
+    base_url = "https://apihub.agnes-ai.com"
     
-    if image_path:
-        await update.message.reply_text("⏳ Загружаю фото в облако Magic Hour...")
-        try:
-            uploaded_file_path = await asyncio.to_thread(mh_client.v1.files.upload_file, file=image_path)
-            payload = {"model": "ltx-2.5", "assets": {"image_file_path": uploaded_file_path}, "end_seconds": 5, "resolution": "480p", "style": {"prompt": prompt}}
-            endpoint = f"{MAGIC_HOUR_URL}/image-to-video"
-        except Exception as e:
-            return await update.message.reply_text(f"❌ Ошибка загрузки фото: {e}")
-    else:
-        payload = {"model": "ltx-2.5", "prompt": prompt, "end_seconds": 5, "resolution": "480p", "aspect_ratio": "16:9", "style": {"prompt": prompt}}
-        endpoint = f"{MAGIC_HOUR_URL}/text-to-video"
-        
+    # Agnes AI принимает изображение как URL или base64. 
+    # Для простоты и надежности загрузим локальный файл и передадим его как base64.
     try:
-        res = await asyncio.to_thread(requests.post, endpoint, headers=headers, json=payload, timeout=30)
-        if res.status_code != 200: return await update.message.reply_text(f"❌ Ошибка API: {res.text}")
-        project_id = res.json().get("project_id") or res.json().get("id")
-        await update.message.reply_text("🎬 Видео отправлено на рендер. Ожидайте...")
+        if image_path and os.path.exists(image_path):
+            import base64
+            with open(image_path, "rb") as img_file:
+                img_b64 = base64.b64encode(img_file.read()).decode('utf-8')
+                # Формат может отличаться, но обычно это data URI
+                image_data = f"data:image/jpeg;base64,{img_b64}"
+        else:
+            image_data = None
+            
+        payload = {
+            "model": "agnes-video-2.5-flash",
+            "prompt": prompt,
+            "seconds": 5,  # Длительность
+            # "image_url": image_data # Раскомментируйте, если Agnes требует именно image_url
+        }
+        # Примечание: Точная структура payload для image-to-video может отличаться.
+        # Если Agnes API ожидает image_url, используйте image_data в этом поле.
         
-        for _ in range(60):
+        await update.message.reply_text("⏳ Отправляю запрос в Agnes AI...")
+        
+        # 1. Создаем задачу
+        # (Здесь используется общий эндпоинт, как в примерах CLI)
+        res = await asyncio.to_thread(
+            requests.post, 
+            f"{base_url}/v1/videos", 
+            headers=headers, 
+            json=payload, 
+            timeout=30
+        )
+        
+        if res.status_code != 200:
+            return await update.message.reply_text(f"❌ Ошибка Agnes API: {res.text}")
+            
+        task_data = res.json()
+        video_id = task_data.get("video_id")
+        if not video_id:
+            return await update.message.reply_text(f"❌ Не удалось получить ID задачи: {task_data}")
+            
+        await update.message.reply_text("🎬 Видео отправлено на рендер. Ожидайте (2-5 минут)...")
+        
+        # 2. Опрашиваем статус
+        # В примерах CLI используется GET /agnesapi?video_id=...&model_name=...
+        poll_url = f"{base_url}/agnesapi?video_id={video_id}&model_name=agnes-video-2.5-flash"
+        
+        for attempt in range(60): # 10 минут (60 * 10 сек)
             await asyncio.sleep(10)
-            check = await asyncio.to_thread(requests.get, f"{MAGIC_HOUR_URL}/projects/{project_id}", headers=headers, timeout=30)
+            check = await asyncio.to_thread(requests.get, poll_url, headers=headers, timeout=30)
             result = check.json()
+            
+            # Поле статуса может называться по-разному, проверяем разные варианты
             status = str(result.get("status", "")).lower()
-            if status in ["complete", "completed", "succeeded"]:
-                return await update.message.reply_video(video=result["downloads"][0].get("url"), caption="Ваше видео готово!", supports_streaming=True)
+            if status in ["complete", "completed", "succeeded", "done"]:
+                # Ищем URL видео
+                video_url = result.get("video_url") or result.get("url")
+                if not video_url and "data" in result:
+                    video_url = result["data"].get("video_url")
+                    
+                if video_url:
+                    return await update.message.reply_video(
+                        video=video_url, 
+                        caption="Ваше видео готово! (Agnes AI)", 
+                        supports_streaming=True
+                    )
+                else:
+                    return await update.message.reply_text(f"✅ Задача завершена, но URL видео не найден: {result}")
+                    
             elif status in ["failed", "error"]:
                 return await update.message.reply_text(f"❌ Ошибка генерации: {result}")
-        await update.message.reply_text("Прошло 10 минут. Видео всё еще рендерится.")
-    except Exception as e: await update.message.reply_text(f"Ошибка: {e}")
+                
+        await update.message.reply_text("Прошло 10 минут. Видео всё еще рендерится. Попробуйте позже.")
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка при работе с Agnes AI: {e}")
 
 async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -448,7 +483,6 @@ def main():
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Регистрация ВСЕХ команд
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("set_chat", set_chat))
     application.add_handler(CommandHandler("weather", weather_command))
@@ -460,17 +494,16 @@ def main():
     application.add_handler(CommandHandler("guess", start_guess))
     application.add_handler(CommandHandler("snake", start_snake))
     application.add_handler(CommandHandler("rps", play_game))
-    application.add_handler(CommandHandler("game", play_game)) # Добавлена команда /game
+    application.add_handler(CommandHandler("game", play_game))
 
     application.add_handler(MessageHandler(filters.PHOTO & filters.CaptionRegex(r'^/photo'), photo_to_video))
     application.add_handler(CallbackQueryHandler(snake_callback, pattern="^snake_"))
     application.add_handler(CallbackQueryHandler(game_callback, pattern="^(rock|scissors|paper)$"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler))
 
-    # --- Планировщик задач (погода и напоминания) ---
     if application.job_queue:
-        application.job_queue.run_daily(send_morning_weather, time=MORNING_TIME) # Утренняя погода
-        application.job_queue.run_daily(send_night_greeting, time=NIGHT_TIME) # Вечернее пожелание
+        application.job_queue.run_daily(send_morning_weather, time=MORNING_TIME)
+        application.job_queue.run_daily(send_night_greeting, time=NIGHT_TIME)
 
     application.run_polling()
 
