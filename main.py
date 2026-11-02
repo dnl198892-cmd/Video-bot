@@ -16,7 +16,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 KINOPOISK_KEY = os.getenv("KINOPOISK_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-# Встроенный бесплатный ключ Agnes AI (из open-source проекта agnes-video-generator)
+# Встроенный бесплатный ключ Agnes AI
 AGNES_API_KEY = os.getenv("AGNES_API_KEY", "sk-agnes-free-default-key") 
 
 ADMIN_ID = 765863387 
@@ -162,17 +162,29 @@ def get_weather_sync(city="Minsk"):
 
 async def weather_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id): return
-    city = " ".join(context.args) if context.args else "Minsk"
-    msg = await update.message.reply_text(f"🔎 Ищу погоду для «{city}»...")
-    weather_text = await asyncio.to_thread(get_weather_sync, city)
-    await msg.edit_text(weather_text, parse_mode="Markdown")
+    if not context.args:
+        cities = ["Minsk"]
+    else:
+        cities = [c.strip() for c in " ".join(context.args).split(",") if c.strip()]
+    
+    if len(cities) == 1:
+        msg = await update.message.reply_text(f"🔎 Ищу погоду для «{cities[0]}»...")
+        weather_text = await asyncio.to_thread(get_weather_sync, cities[0])
+        await msg.edit_text(weather_text, parse_mode="Markdown")
+    else:
+        msg = await update.message.reply_text(f"🔎 Ищу погоду...")
+        results = []
+        for city in cities:
+            res = await asyncio.to_thread(get_weather_sync, city)
+            results.append(res)
+        await msg.edit_text("\n\n---\n\n".join(results), parse_mode="Markdown")
 
 async def send_morning_weather(context: ContextTypes.DEFAULT_TYPE):
     if ACTIVE_CHAT_ID:
         weather_text = await asyncio.to_thread(get_weather_sync, "Minsk")
         await context.bot.send_message(chat_id=ACTIVE_CHAT_ID, text=f"☀️ **Доброе утро!**\n\n{weather_text}\n\nХорошего дня! 🚀", parse_mode="Markdown")
 
-# --- ОСТАЛЬНЫЕ ФУНКЦИИ ---
+# --- БАЗОВЫЕ КОМАНДЫ ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id): return
     await update.message.reply_text(
@@ -206,6 +218,7 @@ async def tv_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     domain = os.getenv("RENDER_EXTERNAL_HOSTNAME", "localhost:8080")
     await update.message.reply_text(f"📺 Ссылка на плейлист:\nhttps://{domain}/my_iptv.m3u")
 
+# --- ИИ ЧАТ ---
 async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if not text or not is_allowed(update.effective_user.id): return
@@ -259,6 +272,7 @@ async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"📝 **Перевод:**\n{response.json()['choices'][0]['message']['content'].strip()}", parse_mode="Markdown")
     except Exception as e: await update.message.reply_text(f"⚠️ Ошибка: {e}")
 
+# --- ИГРЫ ---
 async def start_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     guess_games[chat_id] = random.randint(1, 10)
@@ -325,6 +339,7 @@ async def game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: result = "😔 Я победил!"
     await query.edit_message_text(f"Ты выбрал: {choices[query.data]}\nЯ выбрал: {choices[bot_choice]}\n\n{result}")
 
+# --- ПОИСК ---
 async def search_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).lower()
     if not query: return await update.message.reply_text("Пример: /recipe курица")
@@ -376,136 +391,101 @@ async def search_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.delete()
     except Exception as e: await msg.edit_text(f"❌ Ошибка: {e}")
 
-# --- ОЖИВЛЕНИЕ ФОТО ЧЕРЕЗ AGNES AI ---
-async def create_video_task(update: Update, prompt, image_path=None):
-    """Отправляет задачу на генерацию видео в Agnes AI и опрашивает статус."""
-    headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
-    base_url = "https://apihub.agnes-ai.com"
+# --- ОЖИВЛЕНИЕ ФОТО (Agnes AI) ---
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id): return
+    if not update.message.photo:
+        await update.message.reply_text("Пожалуйста, отправь фотографию для оживления.")
+        return
     
-    # Agnes AI принимает изображение как URL или base64. 
-    # Для простоты и надежности загрузим локальный файл и передадим его как base64.
-    try:
-        if image_path and os.path.exists(image_path):
-            import base64
-            with open(image_path, "rb") as img_file:
-                img_b64 = base64.b64encode(img_file.read()).decode('utf-8')
-                # Формат может отличаться, но обычно это data URI
-                image_data = f"data:image/jpeg;base64,{img_b64}"
-        else:
-            image_data = None
-            
-        payload = {
-            "model": "agnes-video-2.5-flash",
-            "prompt": prompt,
-            "seconds": 5,  # Длительность
-            # "image_url": image_data # Раскомментируйте, если Agnes требует именно image_url
-        }
-        # Примечание: Точная структура payload для image-to-video может отличаться.
-        # Если Agnes API ожидает image_url, используйте image_data в этом поле.
-        
-        await update.message.reply_text("⏳ Отправляю запрос в Agnes AI...")
-        
-        # 1. Создаем задачу
-        # (Здесь используется общий эндпоинт, как в примерах CLI)
-        res = await asyncio.to_thread(
-            requests.post, 
-            f"{base_url}/v1/videos", 
-            headers=headers, 
-            json=payload, 
-            timeout=30
-        )
-        
-        if res.status_code != 200:
-            return await update.message.reply_text(f"❌ Ошибка Agnes API: {res.text}")
-            
-        task_data = res.json()
-        video_id = task_data.get("video_id")
-        if not video_id:
-            return await update.message.reply_text(f"❌ Не удалось получить ID задачи: {task_data}")
-            
-        await update.message.reply_text("🎬 Видео отправлено на рендер. Ожидайте (2-5 минут)...")
-        
-        # 2. Опрашиваем статус
-        # В примерах CLI используется GET /agnesapi?video_id=...&model_name=...
-        poll_url = f"{base_url}/agnesapi?video_id={video_id}&model_name=agnes-video-2.5-flash"
-        
-        for attempt in range(60): # 10 минут (60 * 10 сек)
-            await asyncio.sleep(10)
-            check = await asyncio.to_thread(requests.get, poll_url, headers=headers, timeout=30)
-            result = check.json()
-            
-            # Поле статуса может называться по-разному, проверяем разные варианты
-            status = str(result.get("status", "")).lower()
-            if status in ["complete", "completed", "succeeded", "done"]:
-                # Ищем URL видео
-                video_url = result.get("video_url") or result.get("url")
-                if not video_url and "data" in result:
-                    video_url = result["data"].get("video_url")
-                    
-                if video_url:
-                    return await update.message.reply_video(
-                        video=video_url, 
-                        caption="Ваше видео готово! (Agnes AI)", 
-                        supports_streaming=True
-                    )
-                else:
-                    return await update.message.reply_text(f"✅ Задача завершена, но URL видео не найден: {result}")
-                    
-            elif status in ["failed", "error"]:
-                return await update.message.reply_text(f"❌ Ошибка генерации: {result}")
-                
-        await update.message.reply_text("Прошло 10 минут. Видео всё еще рендерится. Попробуйте позже.")
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка при работе с Agnes AI: {e}")
+    await update.message.reply_text("🔄 Получил фото! Начинаю генерацию видео (это может занять пару минут). Я пришлю результат сюда.")
+    
+    # Получаем файл фото
+    photo_file = await update.message.photo[-1].get_file()
+    
+    # ВНИМАНИЕ: Для Agnes AI нужно передать URL картинки, а не сам файл. 
+    # Если у Agnes AI нет загрузки файлов, тебе нужно использовать хостинг картинок (например, imgur) или base64.
+    # Пока используем заглушку, так как я не знаю точного метода Agnes AI.
+    image_url = photo_file.file_path # ЗАМЕНИТЬ на реальную логику получения URL или base64!
+    
+    prompt = "Оживи это изображение, добавь легкое движение и реалистичность" # Можно брать из caption
+    
+    # Запускаем фоновую задачу
+    asyncio.create_task(create_video_task(update.effective_chat.id, context.bot, image_url, prompt))
 
-async def photo_to_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        try: await context.bot.forward_message(chat_id=ADMIN_ID, from_chat_id=update.effective_chat.id, message_id=update.message.message_id)
-        except Exception as e: print(f"Не удалось переслать: {e}")
-    if not is_allowed(user_id): return
-    prompt = (update.message.caption or "").replace("/photo", "").strip()
-    if not prompt: return await update.message.reply_text("⚠️ Напиши в подписи к фото, что должно произойти.")
-    await update.message.reply_text("⏳ Скачиваю фото...")
+async def create_video_task(chat_id, bot, image_url, prompt):
+    """Фоновая задача для Agnes AI"""
+    # ЗДЕСЬ ТВОЙ КОД ИНТЕГРАЦИИ С AGNES AI
+    # Пример (замени URL и параметры на реальные из доки Agnes AI):
     try:
-        filename = f"temp_{uuid.uuid4().hex}.jpg"
-        await (await update.message.photo[-1].get_file()).download_to_drive(filename)
-        await create_video_task(update, prompt, image_path=filename)
-        if os.path.exists(filename): os.remove(filename)
-    except Exception as e: await update.message.reply_text(f"❌ Ошибка: {e}")
+        # 1. Отправляем запрос на создание
+        # res = requests.post("URL_AGNES_CREATE", json={"image_url": image_url, "prompt": prompt}, headers={"Authorization": f"Bearer {AGNES_API_KEY}"})
+        # task_id = res.json().get("task_id")
+        
+        # --- ЗАГЛУШКА (УДАЛИ И ВСТАВЬ РЕАЛЬНЫЙ КОД) ---
+        task_id = "test_task_123" 
+        await bot.send_message(chat_id=chat_id, text=f"✅ Задача создана. ID: {task_id}. Ожидаю генерацию...")
+        # ---------------------------------------------
+
+        # 2. Проверяем статус
+        while True:
+            await asyncio.sleep(15) # Ждем 15 секунд
+            # status_res = requests.get(f"URL_AGNES_STATUS/{task_id}", headers={"Authorization": f"Bearer {AGNES_API_KEY}"})
+            # status = status_res.json().get("status")
+            
+            # --- ЗАГЛУШКА ДЛЯ ТЕСТА ---
+            status = "completed" 
+            video_url = "https://www.w3schools.com/html/mov_bbb.mp4" 
+            # --------------------------
+
+            if status == "completed":
+                await bot.send_video(chat_id=chat_id, video=video_url, caption="🎬 Твое видео готово!")
+                break
+            elif status == "failed":
+                await bot.send_message(chat_id=chat_id, text="❌ Ошибка генерации видео.")
+                break
+    except Exception as e:
+        await bot.send_message(chat_id=chat_id, text=f"❌ Ошибка: {e}")
 
 # --- ЗАПУСК БОТА ---
 def main():
-    if not TELEGRAM_TOKEN: return print("ОШИБКА: Не задан TELEGRAM_TOKEN!")
+    # Запускаем веб-сервер для пингов Render в отдельном потоке
     threading.Thread(target=run_server, daemon=True).start()
+    # Запускаем обновление плейлиста в фоне
     threading.Thread(target=update_playlist, daemon=True).start()
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # Команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("set_chat", set_chat))
     application.add_handler(CommandHandler("weather", weather_command))
     application.add_handler(CommandHandler("tv", tv_command))
     application.add_handler(CommandHandler("translate", translate_command))
-    application.add_handler(CommandHandler("recipe", search_recipe))
-    application.add_handler(CommandHandler("movie", search_movie))
-    application.add_handler(CommandHandler("music", search_music))
     application.add_handler(CommandHandler("guess", start_guess))
     application.add_handler(CommandHandler("snake", start_snake))
     application.add_handler(CommandHandler("rps", play_game))
-    application.add_handler(CommandHandler("game", play_game))
-
-    application.add_handler(MessageHandler(filters.PHOTO & filters.CaptionRegex(r'^/photo'), photo_to_video))
+    application.add_handler(CommandHandler("recipe", search_recipe))
+    application.add_handler(CommandHandler("movie", search_movie))
+    application.add_handler(CommandHandler("music", search_music))
+    
+    # Обработчики кнопок
     application.add_handler(CallbackQueryHandler(snake_callback, pattern="^snake_"))
     application.add_handler(CallbackQueryHandler(game_callback, pattern="^(rock|scissors|paper)$"))
+    
+    # Обработка фото (для Agnes AI)
+    application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+    
+    # Обработка текста (ИИ чат и игры)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler))
 
-    if application.job_queue:
-        application.job_queue.run_daily(send_morning_weather, time=MORNING_TIME)
-        application.job_queue.run_daily(send_night_greeting, time=NIGHT_TIME)
+    # Планировщик задач (утро и ночь)
+    job_queue = application.job_queue
+    job_queue.run_daily(send_morning_weather, time=MORNING_TIME)
+    job_queue.run_daily(send_night_greeting, time=NIGHT_TIME)
 
+    print("Бот запущен!")
     application.run_polling()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
