@@ -389,7 +389,8 @@ async def search_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not track: return await msg.edit_text("😔 Ничего не нашлось.")
         await update.message.reply_audio(audio=track.get("previewUrl"), title=track.get("trackName"), performer=track.get("artistName"), thumbnail=track.get("artworkUrl100", "").replace("100x100", "600x600"), caption=f"🎵 **{track.get('artistName')} — {track.get('trackName')}**", parse_mode="Markdown")
         await msg.delete()
-    except Exception as e: await msg.edit_text(f"❌ Ошибка: {e}")
+    except Exception as e: 
+        await msg.edit_text(f"❌ Ошибка: {e}")
 
 # --- ОЖИВЛЕНИЕ ФОТО (Agnes AI) ---
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -403,22 +404,24 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Получаем файл фото
     photo_file = await update.message.photo[-1].get_file()
     
-    # ВНИМАНИЕ: Для Agnes AI нужно передать URL картинки, а не сам файл. 
-    # Если у Agnes AI нет загрузки файлов, тебе нужно использовать хостинг картинок (например, imgur) или base64.
-    # Пока используем заглушку, так как я не знаю точного метода Agnes AI.
-    image_url = photo_file.file_path # ЗАМЕНИТЬ на реальную логику получения URL или base64!
+    # ВНИМАНИЕ: Для Agnes AI нужно передать URL картинки. 
+    image_url = photo_file.file_path 
     
-    prompt = "Оживи это изображение, добавь легкое движение и реалистичность" # Можно брать из caption
+    prompt = update.message.caption if update.message.caption else "Оживи это изображение, добавь легкое движение и реалистичность"
     
     # Запускаем фоновую задачу
     asyncio.create_task(create_video_task(update.effective_chat.id, context.bot, image_url, prompt))
 
 async def create_video_task(chat_id, bot, image_url, prompt):
     """Фоновая задача для Agnes AI"""
-    # ЗДЕСЬ ТВОЙ КОД ИНТЕГРАЦИИ С AGNES AI
-    # Пример (замени URL и параметры на реальные из доки Agnes AI):
     try:
-        # 1. Отправляем запрос на создание
+        # =====================================================================
+        # ЗДЕСЬ ТВОЙ КОД ИНТЕГРАЦИИ С AGNES AI
+        # Ниже написана заглушка, которая просто присылает тестовое видео.
+        # Тебе нужно заменить этот блок на реальные запросы из документации.
+        # =====================================================================
+        
+        # 1. Отправляем запрос на создание задачи
         # res = requests.post("URL_AGNES_CREATE", json={"image_url": image_url, "prompt": prompt}, headers={"Authorization": f"Bearer {AGNES_API_KEY}"})
         # task_id = res.json().get("task_id")
         
@@ -427,9 +430,10 @@ async def create_video_task(chat_id, bot, image_url, prompt):
         await bot.send_message(chat_id=chat_id, text=f"✅ Задача создана. ID: {task_id}. Ожидаю генерацию...")
         # ---------------------------------------------
 
-        # 2. Проверяем статус
+        # 2. Проверяем статус в цикле
         while True:
             await asyncio.sleep(15) # Ждем 15 секунд
+            
             # status_res = requests.get(f"URL_AGNES_STATUS/{task_id}", headers={"Authorization": f"Bearer {AGNES_API_KEY}"})
             # status = status_res.json().get("status")
             
@@ -444,8 +448,9 @@ async def create_video_task(chat_id, bot, image_url, prompt):
             elif status == "failed":
                 await bot.send_message(chat_id=chat_id, text="❌ Ошибка генерации видео.")
                 break
+                
     except Exception as e:
-        await bot.send_message(chat_id=chat_id, text=f"❌ Ошибка: {e}")
+        await bot.send_message(chat_id=chat_id, text=f"❌ Ошибка в фоновой задаче: {e}")
 
 # --- ЗАПУСК БОТА ---
 def main():
@@ -484,7 +489,7 @@ def main():
     job_queue.run_daily(send_morning_weather, time=MORNING_TIME)
     job_queue.run_daily(send_night_greeting, time=NIGHT_TIME)
 
-    print("Бот запущен!")
+    print("Бот запущен и работает!")
     application.run_polling()
 
 if __name__ == '__main__':
