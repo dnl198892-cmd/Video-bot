@@ -8,6 +8,7 @@ import datetime
 import pytz
 import uuid
 import json
+import base64
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -16,8 +17,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 KINOPOISK_KEY = os.getenv("KINOPOISK_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-# Встроенный бесплатный ключ Agnes AI
-AGNES_API_KEY = os.getenv("AGNES_API_KEY", "sk-agnes-free-default-key") 
+# В Render у тебя ключ называется MAGIC_HOUR_KEY. Код теперь ищет именно его.
+MAGIC_HOUR_KEY = os.getenv("MAGIC_HOUR_KEY") 
 
 ADMIN_ID = 765863387 
 ALLOWED_USERS = [765863387, 1331828023] 
@@ -198,7 +199,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎮 /snake — игра Змейка\n"
         "🔢 /guess — угадай число\n"
         "🪨 /rps — камень-ножницы-бумага\n"
-        "🖼 /photo [описание] — оживить фото (Agnes AI)\n"
+        "🖼 /photo [описание] — оживить фото\n"
         "📺 /tv — ссылка на IPTV плейлист\n"
         "⏰ /set_chat — установить этот чат для напоминаний"
     )
@@ -392,71 +393,100 @@ async def search_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e: 
         await msg.edit_text(f"❌ Ошибка: {e}")
 
-# --- ОЖИВЛЕНИЕ ФОТО (Agnes AI) ---
+# --- ОЖИВЛЕНИЕ ФОТО (Magic Hour) ---
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id): return
     if not update.message.photo:
         await update.message.reply_text("Пожалуйста, отправь фотографию для оживления.")
         return
     
-    await update.message.reply_text("🔄 Получил фото! Начинаю генерацию видео (это может занять пару минут). Я пришлю результат сюда.")
+    await update.message.reply_text("🔄 Получил фото! Начинаю генерацию видео. Я пришлю его сюда, когда будет готово.")
     
     # Получаем файл фото
     photo_file = await update.message.photo[-1].get_file()
     
-    # ВНИМАНИЕ: Для Agnes AI нужно передать URL картинки. 
-    image_url = photo_file.file_path 
-    
     prompt = update.message.caption if update.message.caption else "Оживи это изображение, добавь легкое движение и реалистичность"
     
-    # Запускаем фоновую задачу
-    asyncio.create_task(create_video_task(update.effective_chat.id, context.bot, image_url, prompt))
+    # Запускаем фоновую задачу и передаем ей объект файла
+    asyncio.create_task(create_video_task(update.effective_chat.id, context.bot, photo_file, prompt))
 
-async def create_video_task(chat_id, bot, image_url, prompt):
-    """Фоновая задача для Agnes AI"""
+async def create_video_task(chat_id, bot, photo_file, prompt):
+    """Фоновая задача для Magic Hour API"""
+    if not MAGIC_HOUR_KEY:
+        await bot.send_message(chat_id=chat_id, text="❌ Ошибка: Ключ MAGIC_HOUR_KEY не найден в настройках.")
+        return
+
     try:
-        # =====================================================================
-        # ЗДЕСЬ ТВОЙ КОД ИНТЕГРАЦИИ С AGNES AI
-        # Ниже написана заглушка, которая просто присылает тестовое видео.
-        # Тебе нужно заменить этот блок на реальные запросы из документации.
-        # =====================================================================
-        
-        # 1. Отправляем запрос на создание задачи
-        # res = requests.post("URL_AGNES_CREATE", json={"image_url": image_url, "prompt": prompt}, headers={"Authorization": f"Bearer {AGNES_API_KEY}"})
-        # task_id = res.json().get("task_id")
-        
-        # --- ЗАГЛУШКА (УДАЛИ И ВСТАВЬ РЕАЛЬНЫЙ КОД) ---
-        task_id = "test_task_123" 
-        await bot.send_message(chat_id=chat_id, text=f"✅ Задача создана. ID: {task_id}. Ожидаю генерацию...")
-        # ---------------------------------------------
+        # 1. Скачиваем фото в память и кодируем в base64
+        photo_bytes = await photo_file.download_as_bytearray()
+        base64_image = base64.b64encode(photo_bytes).decode('utf-8')
+        image_data_uri = f"data:image/jpeg;base64,{base64_image}"
 
-        # 2. Проверяем статус в цикле
+        headers = {
+            "Authorization": f"Bearer {MAGIC_HOUR_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        # 2. Создаем задачу на генерацию
+        create_url = "https://api.magichour.ai/v1/image-to-video"
+        payload = {
+            "assets": {
+                "image_file_path": image_data_uri # Передаем base64!
+            },
+            "end_seconds": 5,
+            "style": {
+                "prompt": prompt
+            },
+            "name": "Telegram Bot Video"
+        }
+        
+        res = await asyncio.to_thread(requests.post, create_url, headers=headers, json=payload, timeout=40)
+        
+        if res.status_code not in [200, 201]:
+            await bot.send_message(chat_id=chat_id, text=f"❌ Ошибка создания задачи: {res.status_code} - {res.text}")
+            return
+            
+        data = res.json()
+        project_id = data.get("id")
+        
+        if not project_id:
+            await bot.send_message(chat_id=chat_id, text="❌ Сервис не вернул ID проекта.")
+            return
+            
+        await bot.send_message(chat_id=chat_id, text=f"✅ Задача создана. Ожидаю генерацию...")
+        
+        # 3. Проверяем статус
+        status_url = f"https://api.magichour.ai/v1/video-projects/{project_id}"
+        
         while True:
-            await asyncio.sleep(15) # Ждем 15 секунд
+            await asyncio.sleep(20) # Ждем 20 секунд перед проверкой
             
-            # status_res = requests.get(f"URL_AGNES_STATUS/{task_id}", headers={"Authorization": f"Bearer {AGNES_API_KEY}"})
-            # status = status_res.json().get("status")
+            status_res = await asyncio.to_thread(requests.get, status_url, headers=headers, timeout=15)
             
-            # --- ЗАГЛУШКА ДЛЯ ТЕСТА ---
-            status = "completed" 
-            video_url = "https://www.w3schools.com/html/mov_bbb.mp4" 
-            # --------------------------
-
-            if status == "completed":
-                await bot.send_video(chat_id=chat_id, video=video_url, caption="🎬 Твое видео готово!")
-                break
-            elif status == "failed":
-                await bot.send_message(chat_id=chat_id, text="❌ Ошибка генерации видео.")
+            if status_res.status_code == 200:
+                status_data = status_res.json()
+                status = status_data.get("status")
+                
+                if status == "complete":
+                    video_url = status_data.get("download", {}).get("url")
+                    if video_url:
+                        await bot.send_video(chat_id=chat_id, video=video_url, caption="🎬 Твое видео готово!")
+                    else:
+                        await bot.send_message(chat_id=chat_id, text="⚠️ Видео готово, но ссылка не найдена.")
+                    break
+                elif status == "error":
+                    await bot.send_message(chat_id=chat_id, text="❌ Ошибка при генерации видео на сервере Magic Hour.")
+                    break
+            else:
+                await bot.send_message(chat_id=chat_id, text=f"⚠️ Ошибка проверки статуса: {status_res.status_code}")
                 break
                 
     except Exception as e:
-        await bot.send_message(chat_id=chat_id, text=f"❌ Ошибка в фоновой задаче: {e}")
+        await bot.send_message(chat_id=chat_id, text=f"❌ Ошибка в процессе генерации: {str(e)}")
 
 # --- ЗАПУСК БОТА ---
 def main():
-    # Запускаем веб-сервер для пингов Render в отдельном потоке
     threading.Thread(target=run_server, daemon=True).start()
-    # Запускаем обновление плейлиста в фоне
     threading.Thread(target=update_playlist, daemon=True).start()
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -478,18 +508,18 @@ def main():
     application.add_handler(CallbackQueryHandler(snake_callback, pattern="^snake_"))
     application.add_handler(CallbackQueryHandler(game_callback, pattern="^(rock|scissors|paper)$"))
     
-    # Обработка фото (для Agnes AI)
+    # Обработка фото (для Magic Hour)
     application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     
     # Обработка текста (ИИ чат и игры)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler))
 
-    # Планировщик задач (утро и ночь)
+    # Планировщик задач
     job_queue = application.job_queue
     job_queue.run_daily(send_morning_weather, time=MORNING_TIME)
     job_queue.run_daily(send_night_greeting, time=NIGHT_TIME)
 
-    print("Бот запущен и работает!")
+    print("Бот запущен и готов к работе!")
     application.run_polling()
 
 if __name__ == '__main__':
